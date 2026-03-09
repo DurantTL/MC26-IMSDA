@@ -42,12 +42,32 @@ const MANCAMP_FIELD_MAP = [
     'last_name'               => 'last_name',
     'email'                   => 'email',
     'phone'                   => 'phone',
+    'age'                     => 'age',
     'age_group'               => 'age_group',
+    'is_minor'                => 'is_minor',
     'is_guardian'             => 'is_guardian',
+    'guardian_name'           => 'guardian_name',
+    'guardian_phone'          => 'guardian_phone',
+    'guardian_email'          => 'guardian_email',
+    'guardian_relationship'   => 'guardian_relationship',
     'guardian_link_key'       => 'guardian_link_key',
     'guardian_registration_id'=> 'guardian_registration_id',
     'guardian_name_reference' => 'guardian_name_reference',
+    'program_type'            => 'program_type',
+    'shirt_size'              => 'shirt_size',
     'lodging_preference'      => 'lodging_preference',
+    'lodging_option_key'      => 'lodging_option_key',
+    'lodging_option_label'    => 'lodging_option_label',
+    'attendance_type'         => 'attendance_type',
+    'price_selected'          => 'price_selected',
+    'payment_status'          => 'payment_status',
+    'payment_reference'       => 'payment_reference',
+    'payment_method'          => 'payment_method',
+    'frontend_total'          => 'frontend_total',
+    'square_total'            => 'square_total',
+    'amount_paid'             => 'amount_paid',
+    'medical_notes'           => 'medical_notes',
+    'special_considerations'  => 'special_considerations',
     'lodging_status'          => 'lodging_status',
     'bunk_type'               => 'bunk_type',
     'assigned_lodging_area'   => 'assigned_lodging_area',
@@ -56,6 +76,7 @@ const MANCAMP_FIELD_MAP = [
 ];
 
 const MANCAMP_BOOLEAN_FIELDS = [
+    'is_minor',
     'is_guardian',
 ];
 
@@ -65,10 +86,11 @@ const MANCAMP_VALID_AGE_GROUPS = [
 ];
 
 const MANCAMP_VALID_LODGING_PREFERENCES = [
-    'cabin_no_bath',
-    'cabin_bath',
-    'rv',
-    'tent',
+    'shared_cabin_connected',
+    'shared_cabin_detached',
+    'rv_hookups',
+    'tent_no_hookups',
+    'sabbath_attendance_only',
 ];
 
 const MANCAMP_VALID_LODGING_STATUSES = [
@@ -83,6 +105,7 @@ const MANCAMP_VALID_BUNK_TYPES = [
     'top_guardian_child',
     'rv',
     'tent',
+    'day_only',
     'none',
 ];
 
@@ -121,6 +144,15 @@ function mancamp_enqueue_scripts() {
         $version,
         true
     );
+
+    wp_localize_script( 'man-camp-registration', 'manCampRegistrationSettings', [
+        'gasUrl' => mancamp_gas_url(),
+        'fieldMapTodo' => [
+            'lodging_option_key' => 'TODO: confirm Fluent Forms option field name/value mapping in production',
+            'shirt_size' => 'TODO: confirm Fluent Forms shirt field name/value mapping in production',
+            'price_selected' => 'TODO: confirm the pricing field feeding Square remains in submission payload'
+        ]
+    ] );
 }
 
 function mancamp_is_registration_page() {
@@ -220,6 +252,12 @@ function mancamp_build_payload( $formData, $insertId ) {
         $payload[ $gas_key ] = mancamp_sanitise_top_level_field( $ff_key, $raw );
     }
 
+    $payment_meta = mancamp_collect_payment_meta( $formData );
+    foreach ( $payment_meta as $key => $value ) {
+        if ( $value === '' || $value === null ) continue;
+        $payload[ $key ] = $value;
+    }
+
     $people = mancamp_extract_people_payload( $formData );
     if ( is_wp_error( $people ) ) {
         return $people;
@@ -234,6 +272,10 @@ function mancamp_build_payload( $formData, $insertId ) {
 
     if ( empty( $payload['lodging_preference'] ) ) {
         $payload['lodging_preference'] = $primary['lodging_preference'];
+    }
+
+    if ( empty( $payload['lodging_option_key'] ) ) {
+        $payload['lodging_option_key'] = $payload['lodging_preference'];
     }
 
     $full_name = trim( $payload['first_name'] . ' ' . $payload['last_name'] );
@@ -278,24 +320,37 @@ function mancamp_extract_people_payload( $formData ) {
 function mancamp_sanitise_people( $people, $formData = [] ) {
     $clean = [];
     $default_lodging = mancamp_normalise_lodging_preference( $formData['lodging_preference'] ?? '' );
+    $default_option_key = mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? $default_lodging );
+    $default_option_label = sanitize_text_field( $formData['lodging_option_label'] ?? '' );
+    $default_program = sanitize_text_field( $formData['program_type'] ?? 'standard' );
+    $default_shirt = strtoupper( sanitize_text_field( $formData['shirt_size'] ?? '' ) );
 
     foreach ( $people as $idx => $raw ) {
         if ( ! is_array( $raw ) ) {
             continue;
         }
 
+        $age = is_numeric( $raw['age'] ?? null ) ? (int) $raw['age'] : ( is_numeric( $formData['age'] ?? null ) ? (int) $formData['age'] : '' );
         $first_name = sanitize_text_field( $raw['first_name'] ?? $raw['firstName'] ?? '' );
         $last_name  = sanitize_text_field( $raw['last_name'] ?? $raw['lastName'] ?? '' );
         $email      = mancamp_sanitise_email( $raw['email'] ?? '' );
         $phone      = sanitize_text_field( $raw['phone'] ?? '' );
         $notes      = sanitize_textarea_field( $raw['notes'] ?? '' );
-        $age_group  = mancamp_normalise_age_group( $raw['age_group'] ?? $raw['ageGroup'] ?? '', $raw['age'] ?? null );
+        $age_group  = mancamp_normalise_age_group( $raw['age_group'] ?? $raw['ageGroup'] ?? '', $age );
+        $is_minor = mancamp_to_bool( $raw['is_minor'] ?? ( $age !== '' ? $age < 18 : $age_group === 'child' ) );
         $is_guardian = mancamp_to_bool( $raw['is_guardian'] ?? $raw['isGuardian'] ?? false );
+        $guardian_name = sanitize_text_field( $raw['guardian_name'] ?? $raw['guardianName'] ?? $formData['guardian_name'] ?? '' );
+        $guardian_phone = sanitize_text_field( $raw['guardian_phone'] ?? $raw['guardianPhone'] ?? $formData['guardian_phone'] ?? '' );
+        $guardian_email = mancamp_sanitise_email( $raw['guardian_email'] ?? $raw['guardianEmail'] ?? $formData['guardian_email'] ?? '' );
+        $guardian_relationship = sanitize_text_field( $raw['guardian_relationship'] ?? $raw['guardianRelationship'] ?? $formData['guardian_relationship'] ?? '' );
         $guardian_link_key = sanitize_text_field( $raw['guardian_link_key'] ?? $raw['guardianLinkKey'] ?? '' );
         $guardian_registration_id = sanitize_text_field( $raw['guardian_registration_id'] ?? $raw['guardianRegistrationId'] ?? '' );
         $guardian_name_reference = sanitize_text_field( $raw['guardian_name_reference'] ?? $raw['guardianNameReference'] ?? '' );
         $lodging_preference = mancamp_normalise_lodging_preference(
             $raw['lodging_preference'] ?? $raw['lodgingPreference'] ?? $default_lodging
+        );
+        $lodging_option_key = mancamp_normalise_lodging_preference(
+            $raw['lodging_option_key'] ?? $raw['lodgingOptionKey'] ?? $default_option_key
         );
         $lodging_status = mancamp_normalise_enum(
             $raw['lodging_status'] ?? $raw['lodgingStatus'] ?? '',
@@ -324,11 +379,27 @@ function mancamp_sanitise_people( $people, $formData = [] ) {
             'email'                    => $email,
             'phone'                    => $phone,
             'age_group'                => $age_group,
+            'age'                      => $age,
+            'is_minor'                 => $is_minor,
             'is_guardian'              => $is_guardian,
+            'guardian_name'            => $guardian_name,
+            'guardian_phone'           => $guardian_phone,
+            'guardian_email'           => $guardian_email,
+            'guardian_relationship'    => $guardian_relationship,
             'guardian_link_key'        => $guardian_link_key,
             'guardian_registration_id' => $guardian_registration_id,
             'guardian_name_reference'  => $guardian_name_reference,
             'lodging_preference'       => $lodging_preference,
+            'lodging_option_key'       => $lodging_option_key,
+            'lodging_option_label'     => sanitize_text_field( $raw['lodging_option_label'] ?? $raw['lodgingOptionLabel'] ?? $default_option_label ),
+            'attendance_type'          => sanitize_text_field( $raw['attendance_type'] ?? $raw['attendanceType'] ?? $formData['attendance_type'] ?? '' ),
+            'program_type'             => sanitize_text_field( $raw['program_type'] ?? $raw['programType'] ?? $default_program ),
+            'shirt_size'               => strtoupper( sanitize_text_field( $raw['shirt_size'] ?? $raw['shirtSize'] ?? $default_shirt ) ),
+            'price_selected'           => is_numeric( $raw['price_selected'] ?? null ) ? (float) $raw['price_selected'] : ( is_numeric( $formData['price_selected'] ?? null ) ? (float) $formData['price_selected'] : '' ),
+            'payment_status'           => sanitize_text_field( $raw['payment_status'] ?? $raw['paymentStatus'] ?? $formData['payment_status'] ?? '' ),
+            'payment_reference'        => sanitize_text_field( $raw['payment_reference'] ?? $raw['paymentReference'] ?? $formData['payment_reference'] ?? '' ),
+            'medical_notes'            => sanitize_textarea_field( $raw['medical_notes'] ?? $raw['medicalNotes'] ?? $formData['medical_notes'] ?? '' ),
+            'special_considerations'   => sanitize_textarea_field( $raw['special_considerations'] ?? $raw['specialConsiderations'] ?? $formData['special_considerations'] ?? '' ),
             'lodging_status'           => $lodging_status !== '' ? $lodging_status : 'pending',
             'bunk_type'                => $bunk_type !== '' ? $bunk_type : 'none',
             'assigned_lodging_area'    => sanitize_text_field( $raw['assigned_lodging_area'] ?? $raw['assignedLodgingArea'] ?? '' ),
@@ -366,12 +437,28 @@ function mancamp_build_single_person_from_fields( $formData ) {
         'last_name'                => $last_name,
         'email'                    => $email,
         'phone'                    => $phone,
+        'age'                      => is_numeric( $formData['age'] ?? null ) ? (int) $formData['age'] : '',
         'age_group'                => mancamp_normalise_age_group( $formData['age_group'] ?? '', null ),
+        'is_minor'                 => mancamp_to_bool( $formData['is_minor'] ?? false ),
         'is_guardian'              => mancamp_to_bool( $formData['is_guardian'] ?? true ),
+        'guardian_name'            => sanitize_text_field( $formData['guardian_name'] ?? '' ),
+        'guardian_phone'           => sanitize_text_field( $formData['guardian_phone'] ?? '' ),
+        'guardian_email'           => mancamp_sanitise_email( $formData['guardian_email'] ?? '' ),
+        'guardian_relationship'    => sanitize_text_field( $formData['guardian_relationship'] ?? '' ),
         'guardian_link_key'        => sanitize_text_field( $formData['guardian_link_key'] ?? '' ),
         'guardian_registration_id' => sanitize_text_field( $formData['guardian_registration_id'] ?? '' ),
         'guardian_name_reference'  => sanitize_text_field( $formData['guardian_name_reference'] ?? '' ),
         'lodging_preference'       => mancamp_normalise_lodging_preference( $formData['lodging_preference'] ?? '' ),
+        'lodging_option_key'       => mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? $formData['lodging_preference'] ?? '' ),
+        'lodging_option_label'     => sanitize_text_field( $formData['lodging_option_label'] ?? '' ),
+        'attendance_type'          => sanitize_text_field( $formData['attendance_type'] ?? '' ),
+        'program_type'             => sanitize_text_field( $formData['program_type'] ?? 'standard' ),
+        'shirt_size'               => strtoupper( sanitize_text_field( $formData['shirt_size'] ?? '' ) ),
+        'price_selected'           => is_numeric( $formData['price_selected'] ?? null ) ? (float) $formData['price_selected'] : '',
+        'payment_status'           => sanitize_text_field( $formData['payment_status'] ?? '' ),
+        'payment_reference'        => sanitize_text_field( $formData['payment_reference'] ?? '' ),
+        'medical_notes'            => sanitize_textarea_field( $formData['medical_notes'] ?? '' ),
+        'special_considerations'   => sanitize_textarea_field( $formData['special_considerations'] ?? '' ),
         'lodging_status'           => mancamp_normalise_enum( $formData['lodging_status'] ?? '', MANCAMP_VALID_LODGING_STATUSES ) ?: 'pending',
         'bunk_type'                => mancamp_normalise_enum( $formData['bunk_type'] ?? '', MANCAMP_VALID_BUNK_TYPES ) ?: 'none',
         'assigned_lodging_area'    => sanitize_text_field( $formData['assigned_lodging_area'] ?? '' ),
@@ -393,11 +480,19 @@ function mancamp_sanitise_top_level_field( $field_key, $raw ) {
         return mancamp_sanitise_email( $raw );
     }
 
+    if ( in_array( $field_key, [ 'age', 'price_selected', 'frontend_total', 'square_total', 'amount_paid' ], true ) ) {
+        return is_numeric( $raw ) ? 0 + $raw : '';
+    }
+
     if ( $field_key === 'age_group' ) {
         return mancamp_normalise_age_group( $raw, null );
     }
 
     if ( $field_key === 'lodging_preference' ) {
+        return mancamp_normalise_lodging_preference( $raw );
+    }
+
+    if ( $field_key === 'lodging_option_key' ) {
         return mancamp_normalise_lodging_preference( $raw );
     }
 
@@ -439,9 +534,15 @@ function mancamp_normalise_age_group( $value, $age = null ) {
 function mancamp_normalise_lodging_preference( $value ) {
     $normalised = strtolower( sanitize_text_field( (string) $value ) );
     if ( $normalised === 'cabin_with_bath' ) {
-        $normalised = 'cabin_bath';
+        $normalised = 'shared_cabin_connected';
     } elseif ( $normalised === 'cabin_without_bath' ) {
-        $normalised = 'cabin_no_bath';
+        $normalised = 'shared_cabin_detached';
+    } elseif ( $normalised === 'rv' ) {
+        $normalised = 'rv_hookups';
+    } elseif ( $normalised === 'tent' ) {
+        $normalised = 'tent_no_hookups';
+    } elseif ( $normalised === 'sabbath_only' ) {
+        $normalised = 'sabbath_attendance_only';
     }
 
     if ( in_array( $normalised, MANCAMP_VALID_LODGING_PREFERENCES, true ) ) {
@@ -449,6 +550,46 @@ function mancamp_normalise_lodging_preference( $value ) {
     }
 
     return $normalised;
+}
+
+function mancamp_collect_payment_meta( $formData ) {
+    $picked = [
+        'payment_status' => '',
+        'payment_reference' => '',
+        'payment_method' => '',
+        'frontend_total' => '',
+        'square_total' => '',
+        'amount_paid' => '',
+    ];
+
+    $payment_status = mancamp_pick_field( $formData, [ 'payment_status', 'paymentStatus', 'payment-status', 'payment_status_field', 'payment' ] );
+    $payment_reference = mancamp_pick_field( $formData, [ 'payment_reference', 'paymentReference', 'transaction_id', 'transactionId', 'order_id', 'orderId', 'square_payment_id' ] );
+    $payment_method = mancamp_pick_field( $formData, [ 'payment_method', 'paymentMethod', 'payment_type' ] );
+    $frontend_total = mancamp_pick_field( $formData, [ 'price_selected', 'frontend_total', 'payment_total', 'paymentTotal', 'total', 'amount' ] );
+    $square_total = mancamp_pick_field( $formData, [ 'square_total', 'charged_total', 'total_paid', 'amount_paid' ] );
+    $amount_paid = mancamp_pick_field( $formData, [ 'amount_paid', 'total_paid', 'payment_total', 'paymentTotal', 'square_total' ] );
+
+    $picked['payment_status'] = sanitize_text_field( $payment_status );
+    $picked['payment_reference'] = sanitize_text_field( $payment_reference );
+    $picked['payment_method'] = sanitize_text_field( $payment_method );
+    $picked['frontend_total'] = is_numeric( $frontend_total ) ? (float) $frontend_total : '';
+    $picked['square_total'] = is_numeric( $square_total ) ? (float) $square_total : '';
+    $picked['amount_paid'] = is_numeric( $amount_paid ) ? (float) $amount_paid : '';
+
+    return $picked;
+}
+
+function mancamp_pick_field( $formData, $names, $default = '' ) {
+    foreach ( $names as $name ) {
+        if ( isset( $formData[ $name ] ) && $formData[ $name ] !== '' ) {
+            return $formData[ $name ];
+        }
+        $alt_name = str_replace( [ '-', ' ' ], '_', strtolower( $name ) );
+        if ( isset( $formData[ $alt_name ] ) && $formData[ $alt_name ] !== '' ) {
+            return $formData[ $alt_name ];
+        }
+    }
+    return $default;
 }
 
 function mancamp_normalise_enum( $value, $valid_values ) {
@@ -898,7 +1039,7 @@ function mancamp_admin_page() {
 
     <!-- ── Field Reference ───────────────────────────────────────────── -->
     <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;margin-bottom:24px;">
-      <h2 style="margin-top:0;">Fluent Forms Field Name Reference <span style="color:#646970;font-size:13px;font-weight:400;">(v2.0.0)</span></h2>
+      <h2 style="margin-top:0;">Fluent Forms Field Name Reference <span style="color:#646970;font-size:13px;font-weight:400;">(v2.2.0)</span></h2>
       <p style="color:#646970;font-size:13px;">These are the preferred Fluent Forms field names for the Man Camp form. Use them as the field <strong>Name</strong> values in the form builder.</p>
       <table class="widefat striped" style="font-size:12px;">
         <thead><tr><th>FF Field Name</th><th>GAS Key</th><th>Type</th><th>Notes</th></tr></thead>
@@ -907,12 +1048,23 @@ function mancamp_admin_page() {
           <tr><td><code>last_name</code></td>               <td><code>last_name</code></td>               <td>Text</td>     <td>Primary registrant last name</td></tr>
           <tr><td><code>email</code></td>                   <td><code>email</code></td>                   <td>Email</td>    <td>Primary contact email</td></tr>
           <tr><td><code>phone</code></td>                   <td><code>phone</code></td>                   <td>Phone</td>    <td>Primary contact phone</td></tr>
-          <tr><td><code>lodging_preference</code></td>      <td><code>lodging_preference</code></td>      <td>Select</td>   <td>`cabin_no_bath`, `cabin_bath`, `rv`, or `tent`</td></tr>
+          <tr><td><code>age</code></td>                     <td><code>age</code></td>                     <td>Number</td>   <td>Required for minor and Young Men's validation</td></tr>
+          <tr><td><code>lodging_option_key</code></td>      <td><code>lodging_option_key</code></td>      <td>Select</td>   <td>`shared_cabin_connected`, `shared_cabin_detached`, `rv_hookups`, `tent_no_hookups`, `sabbath_attendance_only`</td></tr>
+          <tr><td><code>lodging_option_label</code></td>    <td><code>lodging_option_label</code></td>    <td>Hidden</td>   <td>Preserve the public option label sent to Square and GAS</td></tr>
+          <tr><td><code>price_selected</code></td>          <td><code>price_selected</code></td>          <td>Hidden</td>   <td>Keep explicit for Fluent Forms + Square reconciliation</td></tr>
+          <tr><td><code>payment_status</code></td>          <td><code>payment_status</code></td>          <td>Hidden</td>   <td>Capture Square / Fluent Forms payment status when available</td></tr>
+          <tr><td><code>payment_reference</code></td>       <td><code>payment_reference</code></td>       <td>Hidden</td>   <td>Square order / transaction reference when available</td></tr>
           <tr><td><code>notes</code></td>                   <td><code>notes</code></td>                   <td>Textarea</td> <td>General registration notes</td></tr>
           <tr><td><code>people_json</code></td>             <td><code>people</code></td>                  <td>Hidden</td>   <td>Preferred attendee JSON field written by the widget</td></tr>
           <tr><td><code>roster_json</code></td>             <td><code>roster</code></td>                  <td>Hidden</td>   <td>Legacy mirror of `people_json` for backward compatibility</td></tr>
           <tr><td><code>attendee_count</code></td>          <td><code>attendeeCount</code></td>           <td>Hidden</td>   <td>Attendee count fallback written by the widget</td></tr>
           <tr><td><code>age_group</code></td>               <td><code>age_group</code></td>               <td>Select</td>   <td>Top-level single-person fallback only</td></tr>
+          <tr><td><code>program_type</code></td>            <td><code>program_type</code></td>            <td>Select</td>   <td>`standard` or `young_mens`</td></tr>
+          <tr><td><code>shirt_size</code></td>              <td><code>shirt_size</code></td>              <td>Select</td>   <td>Inventory-tracked shirt size</td></tr>
+          <tr><td><code>guardian_name</code></td>           <td><code>guardian_name</code></td>           <td>Text</td>     <td>Required for minors</td></tr>
+          <tr><td><code>guardian_phone</code></td>          <td><code>guardian_phone</code></td>          <td>Text</td>     <td>Required for minors</td></tr>
+          <tr><td><code>guardian_email</code></td>          <td><code>guardian_email</code></td>          <td>Email</td>    <td>Required for minors</td></tr>
+          <tr><td><code>guardian_relationship</code></td>   <td><code>guardian_relationship</code></td>   <td>Text</td>     <td>Required for minors</td></tr>
           <tr><td><code>is_guardian</code></td>             <td><code>is_guardian</code></td>             <td>Checkbox</td> <td>Top-level single-person fallback only</td></tr>
           <tr><td><code>guardian_link_key</code></td>       <td><code>guardian_link_key</code></td>       <td>Text</td>     <td>Top-level single-person fallback only</td></tr>
           <tr><td><code>guardian_registration_id</code></td><td><code>guardian_registration_id</code></td><td>Text</td>     <td>Top-level single-person fallback only</td></tr>

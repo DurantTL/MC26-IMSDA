@@ -1,157 +1,82 @@
-# Man Camp Configuration
+# Man Camp 2026 Configuration
 
-This document summarizes the Phase 1 configuration model for the Man Camp migration.
+`Config.gs` is now the canonical source for finalized Man Camp 2026 business rules.
 
-The goal of Phase 1 is to centralize global event naming, metadata, and lodging constants in `Config.gs` without changing the underlying architecture yet.
+## Event metadata
 
-## Primary Config Areas
+- Event: `Man Camp 2026`
+- Theme: `Shields of Faith`
+- Theme reference: `Ephesians 6:16`
+- Speakers:
+  - Lee Rochholz — Iowa Missouri Conference President
+  - Mike Fenton — Senior Pastor, Chapel Oaks Seventh-day Adventist Church
 
-## `CONFIG.system`
+## Registration options
 
-System-wide labels used for menus, admin chrome, and health checks.
+`CONFIG.registrationOptions` centralizes:
 
-Key fields:
+- stable option key
+- public label
+- description
+- fixed price
+- attendance type
+- lodging type
+- inventory category
+- waitlist behavior
 
-- `appName`
-- `menuTitle`
-- `adminPanelTitle`
-- `adminPanelSub`
-- `healthCheckName`
-- `organizationName`
-- `registrationLabel`
-- `attendeeGroupLabel`
-- `contactLabel`
+## Lodging inventory
 
-Operator TODO:
+`CONFIG.lodging` now uses finalized Man Camp labels and keys:
 
-- Set `organizationName` to the real conference / ministry name.
-- Update `adminPanelSub` if you want the sidebar subtitle to show final event details instead of placeholder text.
+- `shared_cabin_connected`
+- `shared_cabin_detached`
+- `rv_hookups`
+- `tent_no_hookups`
+- `sabbath_attendance_only`
 
-## `CONFIG.event`
+Inventory rules:
 
-Top-level event metadata for Man Camp.
+- Shared cabin connected uses connected-restroom cabin inventory.
+- Shared cabin detached uses detached-restroom/shower cabin inventory.
+- RV uses configurable RV hookup inventory.
+- Tent is unlimited unless staff later add a cap.
+- Sabbath Attendance only never consumes overnight inventory.
+- Cabin public inventory is still bottom-bunk based.
+- Guardian-linked minors can use `top_guardian_child` cabin placement without consuming additional public bottom-bunk inventory.
 
-Key fields:
+## Shirt inventory
 
-- `code`
-- `year`
-- `name`
-- `tagline`
-- `dates`
-- `location`
-- `contactName`
+`CONFIG.shirts.sizes`:
 
-Operator TODO:
+- `M: 20`
+- `L: 35`
+- `XL: 31`
+- `2XL: 5`
+- `3XL: 5`
+- `4XL: 4`
 
-- Replace all placeholder values before production deployment.
+Shirt inventory is recalculated from accepted roster rows and written to the `ShirtInventory` sheet.
 
-## `CONFIG.email`
+## Program and age rules
 
-Outbound email metadata and contact values.
+`CONFIG.programs`:
 
-Key fields:
+- `standard`
+- `young_mens`
 
-- `enabled`
-- `fromName`
-- `fromEmail`
-- `replyTo`
-- `subject`
-- `eventName`
-- `eventDates`
-- `eventLocation`
-- `contactEmail`
-- `contactPhone`
+Young Men's rules:
 
-Operator TODO:
+- ages `10-14` only
+- guardian information required
 
-- Replace all `TODO:` placeholder sender and contact values.
+`CONFIG.ageRules`:
 
-Notes:
+- minors are under `18`
 
-- Gmail still sends from the Google account that deployed the Apps Script project.
-- `fromName` and `replyTo` control the visible branding and reply behavior.
+## Payment handling
 
-## `CONFIG.pdf`
+`CONFIG.payments` documents the accepted inbound payment statuses and the default method label:
 
-PDF naming and batch messaging.
-
-Key fields:
-
-- `folderName`
-- `batchDialogLabel`
-- `batchCompleteSubject`
-
-Current default folder:
-
-- `Man Camp Registration PDFs`
-
-## `CONFIG.lodging`
-
-Centralized lodging constants added in Phase 1.
-
-### `CONFIG.lodging.capacities`
-
-- `cabinNoBathBottomBunks: 90`
-- `cabinBathBottomBunks: 33`
-- `rvSpots: 0`
-- `tentUnlimited: true`
-
-### `CONFIG.lodging.categories`
-
-Defined categories:
-
-- `cabinNoBath`
-- `cabinBath`
-- `rv`
-- `tent`
-
-Each category includes:
-
-- a stable `key`
-- a human-readable `label`
-- an `inventoryType`
-- a `publicCapacity`
-- whether it `countsAsUnlimited`
-
-### `CONFIG.lodging.validation`
-
-These flags document and now drive the core Man Camp lodging rules.
-
-Current flags:
-
-- `onlyBottomBunksCountTowardPublicCapacity`
-- `childTopBunksRequireGuardian`
-- `childWithoutGuardianGetsAutoBunk`
-- `waitlistWhenBottomBunksExhausted`
-- `adultsConsumeBottomBunkInventory`
-- `guardiansConsumeBottomBunkInventory`
-
-Phase 3 uses these flags as the canonical rules source for inventory and bunk assignment helpers in `Lodging.gs`.
-
-## Phase 3 Inventory Model
-
-The inventory engine now creates and maintains:
-
-- `LodgingInventory`
-- `LodgingAssignments`
-
-Assignment behavior:
-
-- adults and guardians requesting cabins consume bottom-bunk inventory
-- linked children requesting cabins can receive `top_guardian_child`
-- top bunks are tracked separately and do not consume public capacity
-- children without a guardian link are set to `manual_review`
-- RV selections consume configurable RV spot capacity
-- tent selections are always assignable because tent inventory is unlimited
-
-The inventory summary is rebuilt from `LodgingAssignments`, not from hidden counters.
-
-## Backward Compatibility Notes
-
-Phase 1 intentionally preserves the current sheet names and most internal keys:
-
-- `club_name`, `director_email`, and similar existing data keys still exist in the runtime code
-- report and PDF entry points still preserve some legacy function names for compatibility, but the active outputs are now Man Camp-oriented
-- global branding and metadata now read as Man Camp where practical
-
-This means the repo is still mixed in its internal compatibility layer, but the active registration, lodging, admin, reporting, email, and check-in flows are now Man Camp-oriented.
+- Fluent Forms + Square remain the payment processor
+- Apps Script preserves selected price and charged totals for reconciliation
+- backend inventory and validation still run after submission

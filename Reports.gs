@@ -219,7 +219,7 @@ function generateLodgingInventoryReportSheet() {
 
   const inventoryByType = {};
   data.inventoryRows.forEach((row) => {
-    inventoryByType[String(row.lodging_type || '').trim()] = row;
+    inventoryByType[String(row.lodging_category || row.lodging_type || '').trim()] = row;
   });
 
   CONFIG.lodging.inventoryAudit.inventorySummaryRowOrder.forEach((lodgingType) => {
@@ -326,12 +326,15 @@ function generateRvTentCountsSheet() {
     'count'
   ]];
 
-  rows.push(['rv_assigned', countAttendeesByPreferenceAndStatus_(data.registrations, 'rv', 'assigned')]);
-  rows.push(['rv_waitlist', countAttendeesByPreferenceAndStatus_(data.registrations, 'rv', 'waitlist')]);
-  rows.push(['tent_attendees', countAttendeesByPreference_(data.registrations, 'tent')]);
-  rows.push(['tent_registrations', countRegistrationsByPreference_(data.registrations, 'tent')]);
-  rows.push(['cabin_no_bath_assigned', countAttendeesByPreferenceAndStatus_(data.registrations, 'cabin_no_bath', 'assigned')]);
-  rows.push(['cabin_bath_assigned', countAttendeesByPreferenceAndStatus_(data.registrations, 'cabin_bath', 'assigned')]);
+  rows.push(['rv_assigned', countAttendeesByPreferenceAndStatus_(data.registrations, 'rv_hookups', 'assigned')]);
+  rows.push(['rv_waitlist', countAttendeesByPreferenceAndStatus_(data.registrations, 'rv_hookups', 'waitlist')]);
+  rows.push(['tent_attendees', countAttendeesByPreference_(data.registrations, 'tent_no_hookups')]);
+  rows.push(['tent_registrations', countRegistrationsByPreference_(data.registrations, 'tent_no_hookups')]);
+  rows.push(['shared_cabin_detached_assigned', countAttendeesByPreferenceAndStatus_(data.registrations, 'shared_cabin_detached', 'assigned')]);
+  rows.push(['shared_cabin_connected_assigned', countAttendeesByPreferenceAndStatus_(data.registrations, 'shared_cabin_connected', 'assigned')]);
+  rows.push(['sabbath_only_registrations', countRegistrationsByPreference_(data.registrations, 'sabbath_attendance_only')]);
+  rows.push(['young_mens_participants', countAttendeesByProgramType_(data.registrations, 'young_mens')]);
+  rows.push(['minor_registrations', countMinorAttendees_(data.registrations)]);
 
   writeReportSheet_('RV and Tent Counts', rows);
   return rows.length - 1;
@@ -457,6 +460,23 @@ function countRegistrationsByPreference_(registrations, lodgingType) {
   return registrations.filter((registration) => {
     return registration.people.some((person) => String(person.lodging_preference || '').toLowerCase() === lodgingType);
   }).length;
+}
+
+function countAttendeesByProgramType_(registrations, programType) {
+  return registrations.reduce((sum, registration) => {
+    return sum + registration.people.filter((person) => {
+      return String(person.program_type || '').toLowerCase() === programType;
+    }).length;
+  }, 0);
+}
+
+function countMinorAttendees_(registrations) {
+  return registrations.reduce((sum, registration) => {
+    return sum + registration.people.filter((person) => {
+      const age = Number(person.age || '');
+      return String(person.is_minor || '').toLowerCase() === 'yes' || (!isNaN(age) && age < CONFIG.ageRules.adultMinAge);
+    }).length;
+  }, 0);
 }
 
 function getLodgingCategoryDefinition_(lodgingType) {

@@ -63,6 +63,12 @@ function buildConfirmationEmailDataFromRegistration_(ss, registrationId) {
     registrantPhone: reg['phone'] || reg['registrant_phone'] || '',
     timestamp: reg['timestamp'] || new Date(),
     lodgingPreference: reg['lodging_preference'] || '',
+    lodgingOptionLabel: reg['lodging_option_label'] || '',
+    attendanceType: reg['attendance_type'] || '',
+    programType: reg['program_type'] || '',
+    shirtSize: reg['shirt_size'] || '',
+    paymentStatus: reg['payment_status'] || '',
+    paymentReference: reg['payment_reference'] || '',
     lodgingStatus: reg['lodging_status'] || '',
     assignedLodgingArea: reg['assigned_lodging_area'] || reg['camping_location'] || '',
     notes: reg['notes'] || '',
@@ -71,7 +77,9 @@ function buildConfirmationEmailDataFromRegistration_(ss, registrationId) {
     costBreakdown: reg['estimated_total'] !== ''
       ? {
           estimatedTotal: Number(reg['estimated_total']) || 0,
-          lateFeeApplied: String(reg['late_fee_applied'] || '').toLowerCase() === 'yes'
+          paymentStatus: String(reg['payment_status'] || '').toLowerCase(),
+          amountPaid: Number(reg['amount_paid']) || 0,
+          optionPrice: Number(reg['option_price']) || 0
         }
       : {}
   });
@@ -135,6 +143,12 @@ function normalizeConfirmationEmailData_(data) {
     registrantPhone: String(data.registrantPhone || data.registrant_phone || data.phone || '').trim(),
     timestamp: data.timestamp || data.createdAt || data.created_at || new Date(),
     lodgingPreference: normalizeEmailPreference_(data.lodgingPreference || data.lodging_preference || (normalizedPeople[0] ? normalizedPeople[0].lodgingPreference : '')),
+    lodgingOptionLabel: String(data.lodgingOptionLabel || data.lodging_option_label || '').trim(),
+    attendanceType: String(data.attendanceType || data.attendance_type || '').trim(),
+    programType: String(data.programType || data.program_type || '').trim(),
+    shirtSize: String(data.shirtSize || data.shirt_size || '').trim().toUpperCase(),
+    paymentStatus: String(data.paymentStatus || data.payment_status || '').trim(),
+    paymentReference: String(data.paymentReference || data.payment_reference || '').trim(),
     lodgingStatus: normalizeEmailStatus_(data.lodgingStatus || data.lodging_status || derivedStatus),
     assignedLodgingArea: String(data.assignedLodgingArea || data.assigned_lodging_area || '').trim(),
     notes: String(data.notes || '').trim(),
@@ -178,6 +192,9 @@ function buildConfirmationEmailHtml_(data) {
   const createdAt = data.timestamp ? formatEmailDateTime_(data.timestamp) : 'Pending';
   const estimatedTotal = typeof data.costBreakdown.estimatedTotal === 'number' && !isNaN(data.costBreakdown.estimatedTotal)
     ? formatCurrency_(data.costBreakdown.estimatedTotal)
+    : '';
+  const amountPaid = typeof data.costBreakdown.amountPaid === 'number' && !isNaN(data.costBreakdown.amountPaid)
+    ? formatCurrency_(data.costBreakdown.amountPaid)
     : '';
   const needsAttention = waitlistCount > 0 || reviewCount > 0;
 
@@ -256,6 +273,11 @@ function buildConfirmationEmailHtml_(data) {
                 '<tr><td style="' + tdLabelStyle_() + '">Primary Contact</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.registrantName || '—') + '</td></tr>' +
                 '<tr><td style="' + tdLabelStyle_() + '">Email</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.registrantEmail || '—') + '</td></tr>' +
                 '<tr><td style="' + tdLabelStyle_() + '">Phone</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.registrantPhone || '—') + '</td></tr>' +
+                '<tr><td style="' + tdLabelStyle_() + '">Registration Option</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.lodgingOptionLabel || labelForPreference_(data.lodgingPreference) || '—') + '</td></tr>' +
+                '<tr><td style="' + tdLabelStyle_() + '">Program</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.programType || 'standard') + '</td></tr>' +
+                '<tr><td style="' + tdLabelStyle_() + '">Shirt Size</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.shirtSize || '—') + '</td></tr>' +
+                '<tr><td style="' + tdLabelStyle_() + '">Payment Status</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.paymentStatus || 'pending') + '</td></tr>' +
+                '<tr><td style="' + tdLabelStyle_() + '">Payment Reference</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(data.paymentReference || '—') + '</td></tr>' +
               '</table>' +
             '</div>' +
 
@@ -309,10 +331,17 @@ function buildConfirmationEmailHtml_(data) {
               peopleRows +
             '</table>' +
 
-            (estimatedTotal
+            ((estimatedTotal || amountPaid)
               ? '<div style="background:#faf7ef;border:1px solid #e6dfd2;border-radius:10px;padding:12px 14px;margin-bottom:20px;font-size:14px;">' +
-                  '<strong>Estimated Total:</strong> ' + escapeHtml_(estimatedTotal) +
-                  '<div style="margin-top:6px;color:#6b7280;font-size:12px;">This is provided for reference only. TODO: Confirm whether you want pricing language in the production confirmation email.</div>' +
+                  (estimatedTotal ? '<strong>Selected / Charged Total:</strong> ' + escapeHtml_(estimatedTotal) : '') +
+                  (amountPaid ? '<div style="margin-top:6px;"><strong>Amount Paid:</strong> ' + escapeHtml_(amountPaid) + '</div>' : '') +
+                  '<div style="margin-top:6px;color:#6b7280;font-size:12px;">This email preserves the selected option and payment reference for Square reconciliation.</div>' +
+                '</div>'
+              : '') +
+
+            (people.some(function(person) { return person.ageGroup === 'child'; })
+              ? '<div style="background:#fff6e5;border-left:4px solid #d98a1f;padding:12px 14px;border-radius:6px;margin-bottom:20px;font-size:14px;line-height:1.6;">' +
+                  '<strong>Guardian requirement:</strong> Any minor attending Man Camp must have a guardian at camp at all times.' +
                 '</div>'
               : '') +
 
@@ -403,10 +432,11 @@ function buildEmailStatCell_(label, value, bg) {
 
 function labelForPreference_(value) {
   const labels = {
-    cabin_no_bath: 'Cabin No Bath',
-    cabin_bath: 'Cabin With Bath',
-    rv: 'RV',
-    tent: 'Tent'
+    shared_cabin_detached: 'Shared Cabin - Detached restroom/shower, bring your own linens',
+    shared_cabin_connected: 'Shared Cabin - Connected restroom, linens provided',
+    rv_hookups: 'RV Camping - with hookups',
+    tent_no_hookups: 'Tent Camping - no hookups',
+    sabbath_attendance_only: 'Sabbath Attendance only'
   };
   return labels[String(value || '').trim().toLowerCase()] || '';
 }
@@ -427,6 +457,7 @@ function labelForBunkType_(value) {
     top_guardian_child: 'Top Bunk (Guardian-Linked Child)',
     rv: 'RV Spot',
     tent: 'Tent',
+    day_only: 'Sabbath Attendance only',
     none: 'None'
   };
   return labels[String(value || '').trim().toLowerCase()] || 'None';

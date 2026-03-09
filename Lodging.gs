@@ -42,32 +42,39 @@ function seedLodgingInventorySheet_(sheet) {
 function getLodgingDefinitions_() {
   return [
     {
-      key: CONFIG.lodging.categories.cabinNoBath.key,
-      label: CONFIG.lodging.categories.cabinNoBath.label,
-      inventoryType: CONFIG.lodging.categories.cabinNoBath.inventoryType,
-      publicCapacity: CONFIG.lodging.capacities.cabinNoBathBottomBunks,
+      key: CONFIG.lodging.categories.sharedCabinDetached.key,
+      label: CONFIG.lodging.categories.sharedCabinDetached.label,
+      inventoryType: CONFIG.lodging.categories.sharedCabinDetached.inventoryType,
+      publicCapacity: CONFIG.lodging.capacities.sharedCabinDetachedBottomBunks,
       isUnlimited: false
     },
     {
-      key: CONFIG.lodging.categories.cabinBath.key,
-      label: CONFIG.lodging.categories.cabinBath.label,
-      inventoryType: CONFIG.lodging.categories.cabinBath.inventoryType,
-      publicCapacity: CONFIG.lodging.capacities.cabinBathBottomBunks,
+      key: CONFIG.lodging.categories.sharedCabinConnected.key,
+      label: CONFIG.lodging.categories.sharedCabinConnected.label,
+      inventoryType: CONFIG.lodging.categories.sharedCabinConnected.inventoryType,
+      publicCapacity: CONFIG.lodging.capacities.sharedCabinConnectedBottomBunks,
       isUnlimited: false
     },
     {
-      key: CONFIG.lodging.categories.rv.key,
-      label: CONFIG.lodging.categories.rv.label,
-      inventoryType: CONFIG.lodging.categories.rv.inventoryType,
-      publicCapacity: CONFIG.lodging.capacities.rvSpots,
+      key: CONFIG.lodging.categories.rvHookups.key,
+      label: CONFIG.lodging.categories.rvHookups.label,
+      inventoryType: CONFIG.lodging.categories.rvHookups.inventoryType,
+      publicCapacity: CONFIG.lodging.capacities.rvHookupSpots,
       isUnlimited: false
     },
     {
-      key: CONFIG.lodging.categories.tent.key,
-      label: CONFIG.lodging.categories.tent.label,
-      inventoryType: CONFIG.lodging.categories.tent.inventoryType,
+      key: CONFIG.lodging.categories.tentNoHookups.key,
+      label: CONFIG.lodging.categories.tentNoHookups.label,
+      inventoryType: CONFIG.lodging.categories.tentNoHookups.inventoryType,
       publicCapacity: '',
       isUnlimited: !!CONFIG.lodging.capacities.tentUnlimited
+    },
+    {
+      key: CONFIG.lodging.categories.sabbathOnly.key,
+      label: CONFIG.lodging.categories.sabbathOnly.label,
+      inventoryType: CONFIG.lodging.categories.sabbathOnly.inventoryType,
+      publicCapacity: '',
+      isUnlimited: !!CONFIG.lodging.capacities.sabbathOnlyUnlimited
     }
   ];
 }
@@ -133,7 +140,7 @@ function assignLodging(ss, registrationData, options) {
     return buildAssignedRegistration_(registrationData, people, lodgingPreference, 'manual_review');
   }
 
-  if (definition.key === CONFIG.lodging.categories.tent.key) {
+  if (definition.key === CONFIG.lodging.categories.tentNoHookups.key) {
     people.forEach(person => {
       setAssignmentOnPerson_(person, {
         lodgingStatus: 'assigned',
@@ -147,7 +154,21 @@ function assignLodging(ss, registrationData, options) {
     return buildAssignedRegistration_(registrationData, people, lodgingPreference, 'assigned');
   }
 
-  if (definition.key === CONFIG.lodging.categories.rv.key) {
+  if (definition.key === CONFIG.lodging.categories.sabbathOnly.key) {
+    people.forEach(person => {
+      setAssignmentOnPerson_(person, {
+        lodgingStatus: 'assigned',
+        bunkType: 'day_only',
+        assignedLodgingArea: '',
+        consumesPublicInventory: false,
+        inventoryCategory: definition.key,
+        assignmentReason: 'Sabbath Attendance only does not consume overnight lodging inventory.'
+      });
+    });
+    return buildAssignedRegistration_(registrationData, people, lodgingPreference, 'assigned');
+  }
+
+  if (definition.key === CONFIG.lodging.categories.rvHookups.key) {
     const rvCapacity = checkLodgingCapacity(ss, definition.key, 1, excludeRegistrationId);
     const canAssign = rvCapacity.availableUnits > 0;
     people.forEach((person, idx) => {
@@ -302,6 +323,11 @@ function persistLodgingAssignments_(ss, registrationData) {
       guardian_link_key:         person.guardianLinkKey || '',
       guardian_registration_id:  person.guardianRegistrationId || '',
       lodging_preference:        person.lodgingPreference || registrationData.lodgingPreference || '',
+      lodging_option_key:        person.lodgingOptionKey || registrationData.lodgingOptionKey || '',
+      lodging_option_label:      person.lodgingOptionLabel || registrationData.lodgingOptionLabel || '',
+      attendance_type:           person.attendanceType || registrationData.attendanceType || '',
+      program_type:              person.programType || registrationData.programType || '',
+      shirt_size:                person.shirtSize || '',
       lodging_status:            person.lodgingStatus || registrationData.lodgingStatus || '',
       bunk_type:                 person.bunkType || 'none',
       assigned_lodging_area:     person.assignedLodgingArea || '',
@@ -365,7 +391,7 @@ function rebuildLodgingStateForRegistration_(ss, registrationId) {
     registrantName: reg['registrant_name'] || '',
     registrantEmail: reg['registrant_email'] || reg['email'] || '',
     registrantPhone: reg['registrant_phone'] || reg['phone'] || '',
-    lodgingPreference: reg['lodging_preference'] || people[0].lodgingPreference || 'tent',
+    lodgingPreference: reg['lodging_preference'] || people[0].lodgingPreference || 'tent_no_hookups',
     assignedLodgingArea: reg['assigned_lodging_area'] || reg['camping_location'] || '',
     notes: reg['notes'] || '',
     createdAt: reg['created_at'] || reg['timestamp'] || new Date(),
@@ -383,6 +409,11 @@ function rebuildLodgingStateForRegistration_(ss, registrationId) {
 function updateRegistrationAndRosterLodgingFields_(ss, regSheet, rosterSheet, regRowIndex, assigned) {
   updateRowFromObject_(regSheet, regRowIndex, {
     lodging_preference: assigned.lodgingPreference,
+    lodging_option_key: assigned.lodgingOptionKey || assigned.lodgingPreference,
+    lodging_option_label: assigned.lodgingOptionLabel || '',
+    attendance_type: assigned.attendanceType || '',
+    program_type: assigned.programType || '',
+    shirt_size: assigned.shirtSize || '',
     lodging_status: assigned.lodgingStatus,
     bunk_type: assigned.bunkTypeSummary,
     assigned_lodging_area: assigned.assignedLodgingArea || '',
@@ -392,6 +423,11 @@ function updateRegistrationAndRosterLodgingFields_(ss, regSheet, rosterSheet, re
       registration_id: assigned.registrationId,
       registration_label: assigned.registrationLabel,
       lodging_preference: assigned.lodgingPreference,
+      lodging_option_key: assigned.lodgingOptionKey || assigned.lodgingPreference,
+      lodging_option_label: assigned.lodgingOptionLabel || '',
+      attendance_type: assigned.attendanceType || '',
+      program_type: assigned.programType || '',
+      shirt_size: assigned.shirtSize || '',
       lodging_status: assigned.lodgingStatus,
       bunk_type_summary: assigned.bunkTypeSummary,
       assigned_lodging_area: assigned.assignedLodgingArea || '',
@@ -413,6 +449,11 @@ function updateRegistrationAndRosterLodgingFields_(ss, regSheet, rosterSheet, re
     const rowNum = idx + 2;
     updateRowFromObject_(rosterSheet, rowNum, {
       lodging_preference: person.lodgingPreference || '',
+      lodging_option_key: person.lodgingOptionKey || '',
+      lodging_option_label: person.lodgingOptionLabel || '',
+      attendance_type: person.attendanceType || '',
+      program_type: person.programType || '',
+      shirt_size: person.shirtSize || '',
       lodging_status: person.lodgingStatus || '',
       bunk_type: person.bunkType || 'none',
       assigned_lodging_area: person.assignedLodgingArea || '',
@@ -479,11 +520,26 @@ function readPeopleForRegistrationFromRoster_(rosterSheet, registrationId) {
         phone: String(row[colMap['phone']] || ''),
         age: row[colMap['age']] || '',
         ageGroup: ageGroup,
+        isMinor: String(row[colMap['is_minor']] || '').toLowerCase() === 'yes',
         gender: String(row[colMap['gender']] || ''),
         isGuardian: String(row[colMap['is_guardian']] || '').toLowerCase() === 'yes',
+        guardianName: String(row[colMap['guardian_name']] || ''),
+        guardianPhone: String(row[colMap['guardian_phone']] || ''),
+        guardianEmail: String(row[colMap['guardian_email']] || ''),
+        guardianRelationship: String(row[colMap['guardian_relationship']] || ''),
         guardianRegistrationId: String(row[colMap['guardian_registration_id']] || ''),
         guardianLinkKey: String(row[colMap['guardian_link_key']] || ''),
         lodgingPreference: normalizeLodgingPreference_(row[colMap['lodging_preference']] || ''),
+        lodgingOptionKey: String(row[colMap['lodging_option_key']] || ''),
+        lodgingOptionLabel: String(row[colMap['lodging_option_label']] || ''),
+        attendanceType: String(row[colMap['attendance_type']] || ''),
+        programType: String(row[colMap['program_type']] || ''),
+        shirtSize: String(row[colMap['shirt_size']] || '').toUpperCase(),
+        priceSelected: row[colMap['price_selected']] || '',
+        paymentStatus: String(row[colMap['payment_status']] || ''),
+        paymentReference: String(row[colMap['payment_reference']] || ''),
+        medicalNotes: String(row[colMap['medical_notes']] || ''),
+        specialConsiderations: String(row[colMap['special_considerations']] || ''),
         lodgingStatus: String(row[colMap['lodging_status']] || '').toLowerCase(),
         bunkType: String(row[colMap['bunk_type']] || '').toLowerCase(),
         assignedLodgingArea: String(row[colMap['assigned_lodging_area']] || ''),

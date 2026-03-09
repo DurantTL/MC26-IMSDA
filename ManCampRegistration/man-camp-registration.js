@@ -26,8 +26,10 @@
     hiddenFieldNames: ['people_json', 'roster_json'],
     countFieldName: 'attendee_count',
     validAgeGroups: ['adult', 'child'],
-    validLodgingPreferences: ['cabin_no_bath', 'cabin_bath', 'rv', 'tent'],
-    preferredContainerId: 'man-camp-people-container'
+    validLodgingPreferences: ['shared_cabin_connected', 'shared_cabin_detached', 'rv_hookups', 'tent_no_hookups', 'sabbath_attendance_only'],
+    validProgramTypes: ['standard', 'young_mens'],
+    preferredContainerId: 'man-camp-people-container',
+    gasUrl: (window.manCampRegistrationSettings && window.manCampRegistrationSettings.gasUrl) || ''
   };
 
   let attendees = [];
@@ -44,6 +46,7 @@
 
     render();
     attachSubmitValidation();
+    loadAvailabilityFeed();
   }
 
   function getContainer() {
@@ -61,12 +64,21 @@
       last_name: '',
       email: '',
       phone: '',
+      age: '',
       age_group: 'adult',
+      is_minor: false,
       is_guardian: index === 0,
+      guardian_name: '',
+      guardian_phone: '',
+      guardian_email: '',
+      guardian_relationship: '',
       guardian_link_key: '',
       guardian_registration_id: '',
       guardian_name_reference: '',
-      lodging_preference: 'tent',
+      lodging_preference: 'tent_no_hookups',
+      program_type: 'standard',
+      shirt_size: '',
+      medical_notes: '',
       notes: ''
     };
   }
@@ -98,7 +110,7 @@
       ? String(item.age_group || item.ageGroup).toLowerCase()
       : 'adult';
 
-    const lodgingPreference = normalizeLodgingPreference(item.lodging_preference || item.lodgingPreference || 'tent');
+    const lodgingPreference = normalizeLodgingPreference(item.lodging_preference || item.lodgingPreference || 'tent_no_hookups');
 
     return {
       id: item.id || buildPersonId(index),
@@ -106,20 +118,32 @@
       last_name: String(item.last_name || item.lastName || '').trim(),
       email: String(item.email || '').trim(),
       phone: String(item.phone || '').trim(),
+      age: String(item.age || '').trim(),
       age_group: ageGroup,
+      is_minor: toBool(item.is_minor !== undefined ? item.is_minor : false),
       is_guardian: toBool(item.is_guardian !== undefined ? item.is_guardian : item.isGuardian),
+      guardian_name: String(item.guardian_name || item.guardianName || '').trim(),
+      guardian_phone: String(item.guardian_phone || item.guardianPhone || '').trim(),
+      guardian_email: String(item.guardian_email || item.guardianEmail || '').trim(),
+      guardian_relationship: String(item.guardian_relationship || item.guardianRelationship || '').trim(),
       guardian_link_key: String(item.guardian_link_key || item.guardianLinkKey || '').trim(),
       guardian_registration_id: String(item.guardian_registration_id || item.guardianRegistrationId || '').trim(),
       guardian_name_reference: String(item.guardian_name_reference || item.guardianNameReference || '').trim(),
       lodging_preference: lodgingPreference,
+      program_type: CONFIG.validProgramTypes.includes(String(item.program_type || item.programType || '').toLowerCase()) ? String(item.program_type || item.programType).toLowerCase() : 'standard',
+      shirt_size: String(item.shirt_size || item.shirtSize || '').trim().toUpperCase(),
+      medical_notes: String(item.medical_notes || item.medicalNotes || '').trim(),
       notes: String(item.notes || '').trim()
     };
   }
 
   function normalizeLodgingPreference(value) {
     const raw = String(value || '').trim().toLowerCase();
-    if (raw === 'cabin_with_bath') return 'cabin_bath';
-    if (raw === 'cabin_without_bath') return 'cabin_no_bath';
+    if (raw === 'cabin_with_bath') return 'shared_cabin_connected';
+    if (raw === 'cabin_without_bath') return 'shared_cabin_detached';
+    if (raw === 'rv') return 'rv_hookups';
+    if (raw === 'tent') return 'tent_no_hookups';
+    if (raw === 'sabbath_only') return 'sabbath_attendance_only';
     return CONFIG.validLodgingPreferences.includes(raw) ? raw : raw;
   }
 
@@ -189,20 +213,32 @@
           ${textField('Last Name', 'last_name', attendee.last_name, index, true)}
           ${textField('Email', 'email', attendee.email, index, false, 'email')}
           ${textField('Phone', 'phone', attendee.phone, index)}
+          ${textField('Age', 'age', attendee.age, index, true, 'number')}
           ${selectField('Age Group', 'age_group', attendee.age_group, index, [
             { value: 'adult', label: 'Adult' },
             { value: 'child', label: 'Child' }
           ])}
-          ${selectField('Lodging Preference', 'lodging_preference', attendee.lodging_preference, index, [
-            { value: 'cabin_no_bath', label: 'Cabin (No Bath)' },
-            { value: 'cabin_bath', label: 'Cabin (With Bath)' },
-            { value: 'rv', label: 'RV Spot' },
-            { value: 'tent', label: 'Tent' }
+          ${selectField('Program Type', 'program_type', attendee.program_type, index, [
+            { value: 'standard', label: 'Standard' },
+            { value: 'young_mens', label: "Young Men's program" }
           ])}
+          ${selectField('Lodging Preference', 'lodging_preference', attendee.lodging_preference, index, [
+            { value: 'shared_cabin_connected', label: 'Shared Cabin - Connected restroom, linens provided' },
+            { value: 'shared_cabin_detached', label: 'Shared Cabin - Detached restroom/shower, bring your own linens' },
+            { value: 'rv_hookups', label: 'RV Camping - with hookups' },
+            { value: 'tent_no_hookups', label: 'Tent Camping - no hookups' },
+            { value: 'sabbath_attendance_only', label: 'Sabbath Attendance only' }
+          ])}
+          ${textField('Shirt Size', 'shirt_size', attendee.shirt_size, index, true)}
           ${checkboxField('Guardian', 'is_guardian', attendee.is_guardian, index)}
+          ${textField('Guardian Name', 'guardian_name', attendee.guardian_name, index)}
+          ${textField('Guardian Phone', 'guardian_phone', attendee.guardian_phone, index)}
+          ${textField('Guardian Email', 'guardian_email', attendee.guardian_email, index, false, 'email')}
+          ${textField('Guardian Relationship', 'guardian_relationship', attendee.guardian_relationship, index)}
           ${textField('Guardian Link Key', 'guardian_link_key', attendee.guardian_link_key, index, false, 'text', 'Shared key for linked guardian + child records')}
           ${textField('Guardian Registration ID', 'guardian_registration_id', attendee.guardian_registration_id, index)}
           ${textField('Guardian Name Reference', 'guardian_name_reference', attendee.guardian_name_reference, index, false, 'text', 'Optional human-readable guardian reference')}
+          ${textareaField('Medical / Special Considerations', 'medical_notes', attendee.medical_notes, index)}
           ${textareaField('Notes', 'notes', attendee.notes, index)}
         </div>
       </section>
@@ -298,9 +334,14 @@
     if (Number.isNaN(index) || !attendees[index] || !key) return;
 
     attendees[index][key] = field.type === 'checkbox' ? field.checked : field.value;
+    if (key === 'age') {
+      const age = Number(field.value);
+      attendees[index].is_minor = !Number.isNaN(age) && age < 18;
+      attendees[index].age_group = attendees[index].is_minor ? 'child' : 'adult';
+    }
     syncToHiddenFields();
 
-    if (key === 'age_group' || key === 'is_guardian') {
+    if (key === 'age_group' || key === 'is_guardian' || key === 'age') {
       render();
     }
   }
@@ -312,14 +353,26 @@
       last_name: String(attendee.last_name || '').trim(),
       email: String(attendee.email || '').trim(),
       phone: String(attendee.phone || '').trim(),
+      age: String(attendee.age || '').trim(),
       age_group: CONFIG.validAgeGroups.includes(String(attendee.age_group || '').toLowerCase())
         ? String(attendee.age_group).toLowerCase()
         : 'adult',
+      is_minor: !!attendee.is_minor,
       is_guardian: !!attendee.is_guardian,
+      guardian_name: String(attendee.guardian_name || '').trim(),
+      guardian_phone: String(attendee.guardian_phone || '').trim(),
+      guardian_email: String(attendee.guardian_email || '').trim(),
+      guardian_relationship: String(attendee.guardian_relationship || '').trim(),
       guardian_link_key: String(attendee.guardian_link_key || '').trim(),
       guardian_registration_id: String(attendee.guardian_registration_id || '').trim(),
       guardian_name_reference: String(attendee.guardian_name_reference || '').trim(),
       lodging_preference: normalizeLodgingPreference(attendee.lodging_preference || ''),
+      lodging_option_key: normalizeLodgingPreference(attendee.lodging_preference || ''),
+      program_type: CONFIG.validProgramTypes.includes(String(attendee.program_type || '').toLowerCase())
+        ? String(attendee.program_type).toLowerCase()
+        : 'standard',
+      shirt_size: String(attendee.shirt_size || '').trim().toUpperCase(),
+      medical_notes: String(attendee.medical_notes || '').trim(),
       notes: String(attendee.notes || '').trim()
     }));
 
@@ -362,10 +415,25 @@
       if (!String(attendee.last_name || '').trim()) {
         errors.push(`${label}: last name is required.`);
       }
+      if (!String(attendee.age || '').trim()) {
+        errors.push(`${label}: age is required.`);
+      }
+      if (!String(attendee.shirt_size || '').trim()) {
+        errors.push(`${label}: shirt size is required.`);
+      }
+      const age = Number(attendee.age);
+      if (String(attendee.program_type || '') === 'young_mens' && (Number.isNaN(age) || age < 10 || age > 14)) {
+        errors.push(`${label}: Young Men's program is only for ages 10-14.`);
+      }
+      if (!Number.isNaN(age) && age < 18) {
+        if (!String(attendee.guardian_name || '').trim() || !String(attendee.guardian_phone || '').trim() || !String(attendee.guardian_email || '').trim() || !String(attendee.guardian_relationship || '').trim()) {
+          errors.push(`${label}: minors must include guardian name, phone, email, and relationship.`);
+        }
+      }
 
       const lodgingPreference = normalizeLodgingPreference(attendee.lodging_preference || '');
       if (!CONFIG.validLodgingPreferences.includes(lodgingPreference)) {
-        errors.push(`${label}: lodging preference must be Cabin (No Bath), Cabin (With Bath), RV Spot, or Tent.`);
+        errors.push(`${label}: select a valid Man Camp registration option.`);
       }
     });
 
@@ -468,6 +536,8 @@
       .mc-footer-note { margin-top: 14px; color: #5a6c78; font-size: 13px; }
       .mc-errors { margin-top: 16px; border-radius: 10px; background: #fff3f2; color: #7a1d17; padding: 12px 14px; }
       .mc-errors ul { margin: 8px 0 0 18px; }
+      .mc-avail-badge { display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 700; color: #8a5300; }
+      .mc-sold-out { opacity: 0.55; }
       @media (max-width: 700px) {
         .mc-header { flex-direction: column; }
         .mc-grid { grid-template-columns: 1fr; }
@@ -476,6 +546,53 @@
     `;
 
     document.head.appendChild(style);
+  }
+
+  function loadAvailabilityFeed() {
+    if (!CONFIG.gasUrl || typeof window.fetch !== 'function') return;
+    window.fetch(CONFIG.gasUrl + '?action=getAvailability')
+      .then((response) => response.json())
+      .then((data) => {
+        if (data && data.success) applyAvailabilityToForm(data);
+      })
+      .catch(() => {});
+  }
+
+  function applyAvailabilityToForm(data) {
+    (data.options || []).forEach((option) => {
+      const matched = Array.from(document.querySelectorAll('input, option')).filter((el) => {
+        const value = String(el.value || '').trim().toLowerCase();
+        const explicit = String(el.getAttribute('data-mancamp-option-key') || '').trim().toLowerCase();
+        const label = String(el.textContent || '').trim().toLowerCase();
+        return value === option.optionKey || explicit === option.optionKey || label.indexOf(String(option.optionLabel || '').toLowerCase()) >= 0;
+      });
+
+      matched.forEach((el) => {
+        if ('disabled' in el) el.disabled = !!option.soldOut;
+        const wrapper = el.closest('.ff-el-form-check, .ff-el-group, label') || el.parentElement;
+        if (!wrapper) return;
+        wrapper.classList.toggle('mc-sold-out', !!option.soldOut);
+        const existing = wrapper.querySelector('.mc-avail-badge');
+        if (existing) existing.remove();
+        const badge = document.createElement('span');
+        badge.className = 'mc-avail-badge';
+        badge.textContent = option.soldOut
+          ? (option.waitlistAllowed ? 'WAITLIST' : 'SOLD OUT')
+          : (option.available === 'Unlimited' ? 'AVAILABLE' : `${option.available} left`);
+        wrapper.appendChild(badge);
+      });
+    });
+
+    Object.values(data.shirts || {}).forEach((shirt) => {
+      const matched = Array.from(document.querySelectorAll('input, option')).filter((el) => {
+        const value = String(el.value || '').trim().toUpperCase();
+        const explicit = String(el.getAttribute('data-mancamp-shirt-size') || '').trim().toUpperCase();
+        return value === shirt.size || explicit === shirt.size;
+      });
+      matched.forEach((el) => {
+        if ('disabled' in el) el.disabled = !!shirt.soldOut;
+      });
+    });
   }
 
   function escapeAttr(value) {

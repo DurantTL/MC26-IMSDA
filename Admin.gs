@@ -223,7 +223,10 @@ function adminPanelGetClubDetails(registrationId) {
       total: people.length
     },
     estimatedTotal: parseFloat(reg['estimated_total']) || 0,
-    lateFeeApplied: String(reg['late_fee_applied'] || '').toLowerCase() === 'yes',
+    optionPrice: parseFloat(reg['option_price']) || 0,
+    amountPaid: parseFloat(reg['amount_paid']) || 0,
+    paymentStatus: String(reg['payment_status'] || ''),
+    paymentReference: String(reg['payment_reference'] || ''),
     firstTimers: roster.filter(a => a.isFirstTime).length,
     lodgingPreference: lodgingPreference,
     lodgingStatus: lodgingStatus,
@@ -308,10 +311,11 @@ function adminPanelGetInventorySummary() {
 
   return {
     inventory: {
-      cabinNoBath: byCategory[CONFIG.lodging.categories.cabinNoBath.key] || null,
-      cabinBath: byCategory[CONFIG.lodging.categories.cabinBath.key] || null,
-      rv: byCategory[CONFIG.lodging.categories.rv.key] || null,
-      tent: byCategory[CONFIG.lodging.categories.tent.key] || null,
+      cabinDetached: byCategory[CONFIG.lodging.categories.sharedCabinDetached.key] || null,
+      cabinConnected: byCategory[CONFIG.lodging.categories.sharedCabinConnected.key] || null,
+      rv: byCategory[CONFIG.lodging.categories.rvHookups.key] || null,
+      tent: byCategory[CONFIG.lodging.categories.tentNoHookups.key] || null,
+      sabbathOnly: byCategory[CONFIG.lodging.categories.sabbathOnly.key] || null,
       all: inventoryRows
     },
     attention: attention
@@ -453,7 +457,7 @@ function buildAttentionFlagsForRegistration_(registrationRow, people) {
     });
   }
 
-  if ((preference === CONFIG.lodging.categories.cabinNoBath.key || preference === CONFIG.lodging.categories.cabinBath.key) && status === 'waitlist') {
+  if ((preference === CONFIG.lodging.categories.sharedCabinDetached.key || preference === CONFIG.lodging.categories.sharedCabinConnected.key) && status === 'waitlist') {
     flags.push({
       code: 'waitlisted_cabin',
       label: 'Waitlisted cabin request',
@@ -680,7 +684,7 @@ function adminPanelAddAttendee(registrationId, attendeeData) {
     // ── Append roster row ───────────────────────────────────────────────────
     const fullName = String(attendeeData.name || '').trim();
     const split = splitName_(fullName);
-    const lodgingPreference = normalizeLodgingPreference_(attendeeData.lodgingPreference || regRow[regCol['lodgingpreference']] || 'tent');
+    const lodgingPreference = normalizeLodgingPreference_(attendeeData.lodgingPreference || regRow[regCol['lodgingpreference']] || 'tent_no_hookups');
 
     appendRowFromObject_(rosterSheet, {
       registration_id: registrationId,
@@ -1218,7 +1222,7 @@ function adminPanelUpdateEstimatedTotal(registrationId, newTotal) {
 }
 
 /**
- * Revokes meal discount: sets meal_count to 0, recalculates total, updates sheet.
+ * Legacy compatibility action. Man Camp pricing no longer uses a meal discount.
  */
 function adminPanelRevokeMealDiscount(registrationId) {
   try {
@@ -1229,18 +1233,8 @@ function adminPanelRevokeMealDiscount(registrationId) {
 
     const mealCol = getColumnNumber_(regSheet, 'meal_count');
     const totalCol = getColumnNumber_(regSheet, 'estimated_total');
-    const lateCol  = getColumnNumber_(regSheet, 'late_fee_applied');
-    const attendeesCol = getColumnNumber_(regSheet, 'total_attendees');
-
-    // Read current values
-    const attendees = regSheet.getRange(row, attendeesCol).getValue();
-    const isLateStr = regSheet.getRange(row, lateCol).getValue();
-    const isLate = String(isLateStr).toLowerCase() === 'yes';
-
-    // Recalculate
-    const baseRate = CONFIG.pricing.baseRate;
-    const lateFee  = isLate ? CONFIG.pricing.lateFee : 0;
-    const newTotal = (attendees * baseRate) + (attendees * lateFee); // Meal count 0 means 0 discount
+    const optionPriceCol = getColumnNumber_(regSheet, 'price_selected');
+    const newTotal = optionPriceCol > 0 ? Number(regSheet.getRange(row, optionPriceCol).getValue()) || 0 : 0;
 
     // Write back
     regSheet.getRange(row, mealCol).setValue(0);
@@ -1248,7 +1242,7 @@ function adminPanelRevokeMealDiscount(registrationId) {
 
     return {
       success: true,
-      message: `Meal discount revoked. New total: $${newTotal} (Meals: 0)`
+      message: `Meal discount is not used for Man Camp. Total left at $${newTotal}.`
     };
   } catch (e) {
     return { success: false, message: 'Error: ' + e.message };

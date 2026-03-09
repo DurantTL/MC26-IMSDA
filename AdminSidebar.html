@@ -275,10 +275,11 @@
             <div>
               <label class="label">Lodging Preference</label>
               <select id="addLodgingPreference" class="select">
-                <option value="cabin_no_bath">Cabin No Bath</option>
-                <option value="cabin_bath">Cabin With Bath</option>
-                <option value="rv">RV</option>
-                <option value="tent">Tent</option>
+                <option value="shared_cabin_detached">Shared Cabin - Detached restroom/shower, bring your own linens</option>
+                <option value="shared_cabin_connected">Shared Cabin - Connected restroom, linens provided</option>
+                <option value="rv_hookups">RV Camping - with hookups</option>
+                <option value="tent_no_hookups">Tent Camping - no hookups</option>
+                <option value="sabbath_attendance_only">Sabbath Attendance only</option>
               </select>
             </div>
             <div>
@@ -436,20 +437,22 @@
       var inventory = data && data.inventory ? data.inventory : {};
       var attention = data && data.attention ? data.attention : {};
       var cards = [
-        { title: 'Cabin No Bath', item: inventory.cabinNoBath, bg: 'var(--soft-green)' },
-        { title: 'Cabin With Bath', item: inventory.cabinBath, bg: 'var(--soft-blue)' },
-        { title: 'RV', item: inventory.rv, bg: 'var(--soft-gold)' },
-        { title: 'Tent', item: inventory.tent, bg: '#f5ebff' }
+        { title: 'Shared Cabin - Detached restroom/shower, bring your own linens', item: inventory.cabinDetached, bg: 'var(--soft-green)' },
+        { title: 'Shared Cabin - Connected restroom, linens provided', item: inventory.cabinConnected, bg: 'var(--soft-blue)' },
+        { title: 'RV Camping - with hookups', item: inventory.rv, bg: 'var(--soft-gold)' },
+        { title: 'Tent Camping - no hookups', item: inventory.tent, bg: '#f5ebff' },
+        { title: 'Sabbath Attendance only', item: inventory.sabbathOnly, bg: '#eef4ff' }
       ];
       var html = '<div class="card"><div class="card-header"><div class="card-title">Lodging Dashboard</div>' +
         '<div class="card-sub">Inventory totals and flagged records</div></div><div class="card-body"><div class="stats-grid">';
       cards.forEach(function(card) {
         var item = card.item || {};
-        var main = card.title === 'Tent'
+        var unlimited = String(item.isUnlimited || '').toLowerCase() === 'true' || item.isUnlimited === true;
+        var main = unlimited
           ? String(item.used || 0)
           : String(item.used || 0) + ' / ' + String(item.capacity === '' || item.capacity === undefined ? 'Unlimited' : item.capacity);
-        var sub = card.title === 'Tent'
-          ? 'Tent assignments'
+        var sub = unlimited
+          ? 'Assignments'
           : 'Remaining ' + String(item.remaining === '' ? 'Unlimited' : item.remaining);
         html += '<div class="stat-box" style="background:' + card.bg + '"><div class="stat-value">' + esc(main) + '</div>' +
           '<div class="stat-label">' + esc(card.title + ' · ' + sub) + '</div></div>';
@@ -609,7 +612,7 @@
           '<div class="form-row two" style="margin-top:8px"><div><label class="label">Status</label><select id="edit-status-' + index + '" class="select">' +
             optionList(['assigned','waitlist','pending','manual_review'], person.lodgingStatus) +
           '</select></div><div><label class="label">Bunk Type</label><select id="edit-bunk-' + index + '" class="select">' +
-            optionList(['bottom','top_guardian_child','rv','tent','none'], person.bunkType) +
+            optionList(['bottom','top_guardian_child','rv','tent','day_only','none'], person.bunkType) +
           '</select></div></div>' +
           '<div class="form-row two"><div><label class="label">Assigned Area</label><input id="edit-area-' + index + '" class="input" type="text" value="' + esc(person.assignedLodgingArea || '') + '"></div>' +
           '<div><label class="label">Guardian Link Key</label><input id="edit-link-' + index + '" class="input" type="text" value="' + esc(person.guardianLinkKey || '') + '"></div></div>' +
@@ -641,7 +644,7 @@
       document.getElementById('addGuardianRegistrationId').value = '';
       document.getElementById('addNotes').value = '';
       document.getElementById('addAgeGroup').value = 'adult';
-      document.getElementById('addLodgingPreference').value = currentRegistration && currentRegistration.lodgingPreference ? currentRegistration.lodgingPreference : 'tent';
+      document.getElementById('addLodgingPreference').value = currentRegistration && currentRegistration.lodgingPreference ? currentRegistration.lodgingPreference : 'tent_no_hookups';
       document.getElementById('addIsGuardian').checked = true;
       document.getElementById('addFirstTime').checked = false;
       document.getElementById('addMedical').checked = false;

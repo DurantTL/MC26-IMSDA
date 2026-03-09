@@ -61,6 +61,12 @@ function doPost(e) {
 function doGet(e) {
   const action = e && e.parameter && e.parameter.action ? e.parameter.action : '';
 
+  if (action === 'getAvailability') {
+    return ContentService
+      .createTextOutput(JSON.stringify(getAvailability()))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (action === 'ping') {
     return ContentService
       .createTextOutput(JSON.stringify({
@@ -169,12 +175,13 @@ function setupSheets() {
   setupAssignmentsSheet_(ss);
   setupLodgingInventorySheet_(ss);
   setupLodgingAssignmentsSheet_(ss);
+  setupShirtInventorySheet_(ss);
   setupEmailLogSheet_(ss);
 
   SpreadsheetApp.getUi().alert(
     '✅ All sheets created and formatted.\n\n' +
     'Next step: deploy this script as a Web App and paste the URL into the WordPress plugin settings.\n\n' +
-    'Sheets created/updated: RAW, Registrations, Roster, CampingGroups, Assignments, LodgingInventory, LodgingAssignments, EmailLog.'
+    'Sheets created/updated: RAW, Registrations, Roster, CampingGroups, Assignments, LodgingInventory, LodgingAssignments, ShirtInventory, EmailLog.'
   );
 }
 
@@ -229,6 +236,13 @@ function setupLodgingAssignmentsSheet_(ss) {
   let sheet = ss.getSheetByName(CONFIG.sheets.lodgingAssignments);
   if (!sheet) sheet = ss.insertSheet(CONFIG.sheets.lodgingAssignments);
   ensureSheetHeaders_(sheet, getLodgingAssignmentsHeaders_());
+}
+
+function setupShirtInventorySheet_(ss) {
+  let sheet = ss.getSheetByName(CONFIG.sheets.shirtInventory);
+  if (!sheet) sheet = ss.insertSheet(CONFIG.sheets.shirtInventory);
+  ensureSheetHeaders_(sheet, getShirtInventoryHeaders_());
+  seedShirtInventorySheet_(sheet);
 }
 
 /**
@@ -313,9 +327,13 @@ function getRegistrationsHeaders_() {
     'baptism_names','bible_names','sabbath_skit','estimated_total','late_fee_applied',
     'roster_json','fluent_form_entry_id','special_name2',
     // Phase 2 person-based model fields
-    'first_name','last_name','email','phone','age_group','is_guardian',
-    'guardian_registration_id','guardian_link_key','lodging_preference','lodging_status',
-    'bunk_type','assigned_lodging_area','notes','created_at','registration_json',
+    'first_name','last_name','email','phone','age','age_group','is_minor','is_guardian',
+    'guardian_name','guardian_phone','guardian_email','guardian_relationship',
+    'guardian_registration_id','guardian_link_key','lodging_preference','lodging_option_key',
+    'lodging_option_label','attendance_type','program_type','shirt_size','price_selected',
+    'option_price','payment_status','payment_reference','payment_method','frontend_total',
+    'square_total','amount_paid','medical_notes','special_considerations',
+    'lodging_status','bunk_type','assigned_lodging_area','notes','created_at','registration_json',
     // Phase 5 registration-level check-in rollup fields
     'check_in_status','check_in_timestamp'
   ];
@@ -328,9 +346,12 @@ function getRosterHeaders_() {
     'is_medical_personnel','is_master_guide_investiture','is_first_time',
     'counts_toward_billing','club_name','registrant_email','timestamp',
     // Phase 2 person-based model fields
-    'first_name','last_name','email','phone','age_group','is_guardian',
-    'guardian_registration_id','guardian_link_key','lodging_preference','lodging_status',
-    'bunk_type','assigned_lodging_area','notes','created_at',
+    'first_name','last_name','email','phone','age','age_group','is_minor','is_guardian',
+    'guardian_name','guardian_phone','guardian_email','guardian_relationship',
+    'guardian_registration_id','guardian_link_key','lodging_preference','lodging_option_key',
+    'lodging_option_label','attendance_type','program_type','shirt_size','price_selected',
+    'payment_status','payment_reference','medical_notes','special_considerations',
+    'lodging_status','bunk_type','assigned_lodging_area','notes','created_at',
     // Phase 5 individual check-in fields
     'check_in_status','check_in_timestamp'
   ];
@@ -344,7 +365,7 @@ function getCampingGroupsHeaders_() {
     'total_headcount','timestamp',
     // Phase 2 person-based lodging summary fields
     'lodging_preference','lodging_status','bunk_type_summary','assigned_lodging_area',
-    'notes','adult_count','guardian_count'
+    'notes','adult_count','guardian_count','minor_count','program_counts','shirt_counts'
   ];
 }
 
@@ -357,7 +378,7 @@ function getAssignmentsHeaders_() {
     'email_2_sent',
     // Phase 2 person-based assignment placeholders
     'lodging_preference','lodging_status','bunk_type_summary','assigned_lodging_area',
-    'guardian_link_key','notes','created_at'
+    'guardian_link_key','notes','created_at','payment_status','payment_reference','program_counts'
   ];
 }
 
@@ -375,10 +396,18 @@ function getLodgingInventoryHeaders_() {
   ];
 }
 
+function getShirtInventoryHeaders_() {
+  return [
+    'shirt_size','starting_inventory','assigned_count','remaining_inventory',
+    'sold_out','last_recalculated_at','notes'
+  ];
+}
+
 function getLodgingAssignmentsHeaders_() {
   return [
     'registration_id','attendee_id','full_name','age_group','is_guardian','guardian_link_key',
-    'guardian_registration_id','lodging_preference','lodging_status','bunk_type',
+    'guardian_registration_id','lodging_preference','lodging_option_key','lodging_option_label',
+    'attendance_type','program_type','shirt_size','lodging_status','bunk_type',
     'assigned_lodging_area','inventory_category','consumes_public_inventory',
     'assignment_reason','created_at','updated_at',
     // Phase 5 individual check-in fields
@@ -853,18 +882,24 @@ function testConfirmationEmail() {
     registrantPhone:     '(515) 555-0100',
     registrationLabel:   'Smith Household',
     timestamp:           new Date(),
-    lodgingPreference:   'cabin_no_bath',
+    lodgingPreference:   'shared_cabin_detached',
+    lodgingOptionLabel:  'Shared Cabin - Detached restroom/shower, bring your own linens',
+    programType:         'young_mens',
+    shirtSize:           'XL',
+    paymentStatus:       'paid',
+    paymentReference:    'SQ-TEST-001',
     lodgingStatus:       'manual_review',
     assignedLodgingArea: 'Cabin Area TBD',
     notes:               'TODO: Replace this sample note before showing stakeholders.',
     roster: [
-      { id: 'GUARD-001', name: 'James Smith', age: 41, ageGroup: 'adult', isGuardian: true, lodgingPreference: 'cabin_no_bath', lodgingStatus: 'assigned', bunkType: 'bottom', assignedLodgingArea: 'Cabin A-3' },
-      { id: 'ADULT-002', name: 'Michael Reed', age: 38, ageGroup: 'adult', isGuardian: false, lodgingPreference: 'rv', lodgingStatus: 'waitlist', bunkType: 'none', assignmentReason: 'RV spots are currently full.' },
-      { id: 'CHILD-001', name: 'Ethan Smith', age: 12, ageGroup: 'child', isGuardian: false, guardianLinkKey: 'smith-family', lodgingPreference: 'cabin_no_bath', lodgingStatus: 'assigned', bunkType: 'top_guardian_child', assignedLodgingArea: 'Cabin A-3' },
-      { id: 'CHILD-002', name: 'Noah Smith', age: 9, ageGroup: 'child', isGuardian: false, lodgingPreference: 'cabin_no_bath', lodgingStatus: 'manual_review', bunkType: 'none', assignmentReason: 'Child is missing a guardian link and cannot be auto-assigned a cabin bunk.' }
+      { id: 'GUARD-001', name: 'James Smith', age: 41, ageGroup: 'adult', isGuardian: true, lodgingPreference: 'shared_cabin_detached', lodgingStatus: 'assigned', bunkType: 'bottom', assignedLodgingArea: 'Cabin A-3' },
+      { id: 'ADULT-002', name: 'Michael Reed', age: 38, ageGroup: 'adult', isGuardian: false, lodgingPreference: 'rv_hookups', lodgingStatus: 'waitlist', bunkType: 'none', assignmentReason: 'RV Camping - with hookups is currently full.' },
+      { id: 'CHILD-001', name: 'Ethan Smith', age: 12, ageGroup: 'child', isGuardian: false, guardianLinkKey: 'smith-family', lodgingPreference: 'shared_cabin_detached', lodgingStatus: 'assigned', bunkType: 'top_guardian_child', assignedLodgingArea: 'Cabin A-3' },
+      { id: 'CHILD-002', name: 'Noah Smith', age: 9, ageGroup: 'child', isGuardian: false, lodgingPreference: 'shared_cabin_detached', lodgingStatus: 'manual_review', bunkType: 'none', assignmentReason: 'Minor is missing complete guardian linkage and cannot be auto-assigned a cabin bunk.' }
     ],
     costBreakdown: {
-      estimatedTotal: 54
+      estimatedTotal: 100,
+      amountPaid: 100
     }
   };
 

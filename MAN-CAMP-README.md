@@ -44,16 +44,18 @@ Database:
 - `Assignments`: legacy-named compatibility sheet carrying admin/lodging summary data
 - `LodgingInventory`: current public inventory summary by lodging category
 - `LodgingAssignments`: one row per attendee lodging decision
+- `ShirtInventory`: shirt inventory summary by size
 - `EmailLog`: send history
 
 ## Lodging Rules
 
 Configured in [Config.gs](/Users/calebdurant/Downloads/MANCAMP-IMSDA/Config.gs):
 
-- cabin without connected bathroom: 90 bottom bunks
-- cabin with connected bathroom: 33 bottom bunks
-- RV spots: configurable, currently `0` by default
-- tent: unlimited
+- Shared Cabin - Detached restroom/shower, bring your own linens: 90 bottom bunks
+- Shared Cabin - Connected restroom, linens provided: 33 bottom bunks
+- RV Camping - with hookups: configurable, currently `0` by default
+- Tent Camping - no hookups: unlimited
+- Sabbath Attendance only: no overnight inventory usage
 
 Operational rules:
 
@@ -62,7 +64,9 @@ Operational rules:
 - linked children may receive `top_guardian_child`
 - top bunks do not reduce public bottom-bunk capacity
 - a child without a guardian link does not get an automatic cabin bunk
-- over-capacity cabin or RV requests move to `waitlist` or `manual_review`
+- over-capacity shared cabin or RV requests move to `waitlist`
+- minor / guardian issues move the registration to `manual_review`
+- shirt inventory is counted server-side and recalculated into `ShirtInventory`
 
 ## Deployment Steps
 

@@ -74,32 +74,40 @@ function processRegistration(data) {
     assigned_lodging_area: normalized.assignedLodgingArea,
   };
 
-  // --- 5. Apply deterministic lodging assignment rules before any writes ---
+  // --- 5. Validate age/program/guardian/inventory rules before any writes ---
+  const validation = validateRegistrationSubmission_(ss, normalized);
+  if (!validation.success) {
+    return validation;
+  }
+
+  // --- 6. Apply deterministic lodging assignment rules before any writes ---
   const assigned = assignLodging(ss, normalized);
+  applyValidationFlagsToAssignedRegistration_(assigned, validation);
   assigned.campingDetails = {
     lodging_preference: assigned.lodgingPreference,
     lodging_status:     assigned.lodgingStatus,
     assigned_lodging_area: assigned.assignedLodgingArea,
   };
 
-  // --- 6. Calculate cost ---
-  assigned.costBreakdown = calculateCost_(assigned.roster, timestamp, Number(assigned.meal_count) || 0);
+  // --- 7. Preserve selected option and paid totals for Square reconciliation ---
+  assigned.costBreakdown = calculateCost_(assigned, timestamp);
 
-  // --- 7. Write to Registrations sheet ---
+  // --- 8. Write to Registrations sheet ---
   writeRegistrationRow_(ss, assigned);
 
-  // --- 8. Write attendees to Roster sheet ---
+  // --- 9. Write attendees to Roster sheet ---
   writeRosterRows_(ss, assigned);
 
-  // --- 9. Write lodging summary to legacy CampingGroups sheet ---
+  // --- 10. Write lodging summary to legacy CampingGroups sheet ---
   processCampingGroup_(ss, assigned);
 
-  // --- 10. Auto-populate Assignments sheet row ---
+  // --- 11. Auto-populate Assignments sheet row ---
   writeAssignmentsRow_(ss, assigned);
 
-  // --- 10.5 Persist per-person lodging assignments and refresh inventory summary ---
+  // --- 11.5 Persist per-person lodging assignments and refresh inventory summary ---
   persistLodgingAssignments_(ss, assigned);
   refreshLodgingInventorySheet_(ss);
+  refreshShirtInventorySheet_(ss);
 
   // --- 11. Mark RAW row as processed (if entry ID available) ---
   if (assigned.fluentFormEntryId) {
@@ -152,38 +160,30 @@ function processRegistration(data) {
  * @param  {number} mealCount  — number of people the club will sponsor for a meal
  * @returns {Object} cost breakdown
  */
-function calculateCost_(roster, submitDate, mealCount) {
-  // Phase 2 person-based logic: bill adults, not children.
-  const billedRoster   = roster.filter(p => {
-    const ageGroup = String(p.ageGroup || p.age_group || '').toLowerCase();
-    const role = String(p.role || '').toLowerCase();
-    return ageGroup ? ageGroup !== 'child' : role !== 'child';
-  });
-  const totalAttendees = billedRoster.length;
-  const baseAmount     = totalAttendees * CONFIG.pricing.baseRate;
-
-  const isLate        = submitDate > CONFIG.pricing.earlyBirdDeadline;
-  const lateFeeAmount = isLate ? totalAttendees * CONFIG.pricing.lateFee : 0;
-
-  // Cap meal count at billed attendees to prevent an inflated discount.
-  const safeMealCount  = Math.min(Math.max(0, mealCount || 0), totalAttendees);
-  const mealDiscAmount = safeMealCount > 0
-    ? safeMealCount * CONFIG.pricing.mealDiscount
-    : 0;
-
-  // Floor at zero so the estimated total can never go negative.
-  const estimatedTotal = Math.max(0, baseAmount + lateFeeAmount - mealDiscAmount);
+function calculateCost_(registrationData) {
+  const option = getRegistrationOptionByKey_(registrationData.lodgingOptionKey || registrationData.lodgingPreference || '');
+  const configuredPrice = option ? Number(option.price) || 0 : 0;
+  const selectedPrice = registrationData.priceSelected !== '' && registrationData.priceSelected !== undefined
+    ? Number(registrationData.priceSelected) || 0
+    : configuredPrice;
+  const squareTotal = registrationData.squareTotal !== '' && registrationData.squareTotal !== undefined
+    ? Number(registrationData.squareTotal) || 0
+    : '';
+  const frontendTotal = registrationData.frontendTotal !== '' && registrationData.frontendTotal !== undefined
+    ? Number(registrationData.frontendTotal) || 0
+    : '';
+  const amountPaid = registrationData.amountPaid !== '' && registrationData.amountPaid !== undefined
+    ? Number(registrationData.amountPaid) || 0
+    : (squareTotal !== '' ? squareTotal : (frontendTotal !== '' ? frontendTotal : selectedPrice));
 
   return {
-    totalAttendees:   totalAttendees,
-    baseRate:         CONFIG.pricing.baseRate,
-    baseAmount:       baseAmount,
-    isLate:           isLate,
-    lateFeePerPerson: isLate ? CONFIG.pricing.lateFee : 0,
-    lateFeeAmount:    lateFeeAmount,
-    mealCount:        safeMealCount,
-    mealDiscAmount:   mealDiscAmount,
-    estimatedTotal:   estimatedTotal
+    configuredPrice: configuredPrice,
+    selectedPrice: selectedPrice,
+    frontendTotal: frontendTotal,
+    squareTotal: squareTotal,
+    amountPaid: amountPaid,
+    estimatedTotal: amountPaid || selectedPrice,
+    paymentStatus: String(registrationData.paymentStatus || '').trim().toLowerCase() || 'pending'
   };
 }
 
@@ -236,7 +236,7 @@ function writeRegistrationRow_(ss, data) {
     bible_names:              '',
     sabbath_skit:             '',
     estimated_total:          cost.estimatedTotal || 0,
-    late_fee_applied:         cost.isLate ? 'Yes' : 'No',
+    late_fee_applied:         'No',
     roster_json:              JSON.stringify(roster),
     fluent_form_entry_id:     String(data.fluentFormEntryId || ''),
     special_name2:            '',
@@ -244,11 +244,32 @@ function writeRegistrationRow_(ss, data) {
     last_name:                primaryPerson.lastName || data.lastName || '',
     email:                    data.registrantEmail || '',
     phone:                    data.registrantPhone || '',
+    age:                      primaryPerson.age || data.age || '',
     age_group:                primaryPerson.ageGroup || '',
+    is_minor:                 primaryPerson.isMinor ? 'Yes' : 'No',
     is_guardian:              data.primaryPerson && data.primaryPerson.isGuardian ? 'Yes' : 'No',
+    guardian_name:            data.guardianName || primaryPerson.guardianName || '',
+    guardian_phone:           data.guardianPhone || primaryPerson.guardianPhone || '',
+    guardian_email:           data.guardianEmail || primaryPerson.guardianEmail || '',
+    guardian_relationship:    data.guardianRelationship || primaryPerson.guardianRelationship || '',
     guardian_registration_id: data.primaryPerson && data.primaryPerson.guardianRegistrationId ? data.primaryPerson.guardianRegistrationId : '',
     guardian_link_key:        data.primaryPerson && data.primaryPerson.guardianLinkKey ? data.primaryPerson.guardianLinkKey : '',
     lodging_preference:       data.lodgingPreference || '',
+    lodging_option_key:       data.lodgingOptionKey || '',
+    lodging_option_label:     data.lodgingOptionLabel || '',
+    attendance_type:          data.attendanceType || '',
+    program_type:             data.programType || '',
+    shirt_size:               data.shirtSize || '',
+    price_selected:           data.priceSelected !== '' ? data.priceSelected : (cost.selectedPrice || 0),
+    option_price:             cost.configuredPrice || 0,
+    payment_status:           data.paymentStatus || cost.paymentStatus || '',
+    payment_reference:        data.paymentReference || '',
+    payment_method:           data.paymentMethod || CONFIG.payments.defaultMethod,
+    frontend_total:           cost.frontendTotal === '' ? '' : cost.frontendTotal,
+    square_total:             cost.squareTotal === '' ? '' : cost.squareTotal,
+    amount_paid:              cost.amountPaid || 0,
+    medical_notes:            data.medicalNotes || '',
+    special_considerations:   data.specialConsiderations || '',
     lodging_status:           data.lodgingStatus || 'pending',
     bunk_type:                data.bunkTypeSummary || 'none',
     assigned_lodging_area:    data.assignedLodgingArea || '',
@@ -292,11 +313,27 @@ function writeRosterRows_(ss, data) {
       last_name:               person.lastName || '',
       email:                   person.email || data.registrantEmail || '',
       phone:                   person.phone || data.registrantPhone || '',
+      age:                     person.age || '',
       age_group:               person.ageGroup || '',
+      is_minor:                person.isMinor ? 'Yes' : 'No',
       is_guardian:             person.isGuardian ? 'Yes' : 'No',
+      guardian_name:           person.guardianName || '',
+      guardian_phone:          person.guardianPhone || '',
+      guardian_email:          person.guardianEmail || '',
+      guardian_relationship:   person.guardianRelationship || '',
       guardian_registration_id: person.guardianRegistrationId || '',
       guardian_link_key:       person.guardianLinkKey || '',
       lodging_preference:      person.lodgingPreference || data.lodgingPreference || '',
+      lodging_option_key:      person.lodgingOptionKey || data.lodgingOptionKey || '',
+      lodging_option_label:    person.lodgingOptionLabel || data.lodgingOptionLabel || '',
+      attendance_type:         person.attendanceType || data.attendanceType || '',
+      program_type:            person.programType || data.programType || '',
+      shirt_size:              person.shirtSize || '',
+      price_selected:          data.priceSelected !== '' ? data.priceSelected : '',
+      payment_status:          data.paymentStatus || '',
+      payment_reference:       data.paymentReference || '',
+      medical_notes:           person.medicalNotes || '',
+      special_considerations:  person.specialConsiderations || '',
       lodging_status:          person.lodgingStatus || data.lodgingStatus || 'pending',
       bunk_type:               person.bunkType || 'none',
       assigned_lodging_area:   person.assignedLodgingArea || '',
@@ -312,6 +349,9 @@ function processCampingGroup_(ss, data) {
   const adultCount = roster.filter(p => String(p.ageGroup || '').toLowerCase() === 'adult').length;
   const childCount = roster.filter(p => String(p.ageGroup || '').toLowerCase() === 'child').length;
   const guardianCount = roster.filter(p => p.isGuardian).length;
+  const minorCount = roster.filter(p => p.isMinor).length;
+  const shirtCounts = summarizeCountsByField_(roster, 'shirtSize');
+  const programCounts = summarizeCountsByField_(roster, 'programType');
 
   // Legacy sheet reused as a lodging summary table until a dedicated lodging sheet is introduced.
   appendRowFromObject_(sheet, {
@@ -334,7 +374,10 @@ function processCampingGroup_(ss, data) {
     assigned_lodging_area: data.assignedLodgingArea || '',
     notes:                 data.notes || '',
     adult_count:           adultCount,
-    guardian_count:        guardianCount
+    guardian_count:        guardianCount,
+    minor_count:           minorCount,
+    program_counts:        JSON.stringify(programCounts),
+    shirt_counts:          JSON.stringify(shirtCounts)
   });
 }
 
@@ -359,7 +402,10 @@ function writeAssignmentsRow_(ss, data) {
     assigned_lodging_area: data.assignedLodgingArea || '',
     guardian_link_key:     data.guardianLinkSummary || '',
     notes:                 data.notes || '',
-    created_at:            data.createdAt || data.timestamp
+    created_at:            data.createdAt || data.timestamp,
+    payment_status:        data.paymentStatus || '',
+    payment_reference:     data.paymentReference || '',
+    program_counts:        JSON.stringify(summarizeCountsByField_(data.roster || [], 'programType'))
   });
 }
 
@@ -372,11 +418,14 @@ function normalizeRegistrationSubmission_(data) {
   const primary = normalizePrimaryContact_(data, peopleInput);
   const registrationLabel = deriveRegistrationLabel_(primary, data);
   const lodgingPreference = normalizeLodgingPreference_(
-    data.lodging_preference
+    data.lodging_option_key
+      || data.lodging_preference
       || (data.lodgingRequest && data.lodgingRequest.type)
       || data.lodgingPreference
       || ''
   );
+  const option = getRegistrationOptionByKey_(lodgingPreference);
+  const programType = normalizeProgramType_(data.program_type || data.programType || '');
 
   const createdAt = new Date();
   const people = peopleInput.map((person, index) =>
@@ -385,6 +434,17 @@ function normalizeRegistrationSubmission_(data) {
       defaultEmail: primary.email,
       defaultPhone: primary.phone,
       lodgingPreference,
+      lodgingOptionKey: lodgingPreference,
+      lodgingOptionLabel: option ? option.label : String(data.lodging_option_label || ''),
+      attendanceType: option ? option.attendanceType : String(data.attendance_type || ''),
+      programType: programType,
+      shirtSize: normalizeShirtSize_(data.shirt_size || ''),
+      guardianName: String(data.guardian_name || '').trim(),
+      guardianPhone: String(data.guardian_phone || '').trim(),
+      guardianEmail: String(data.guardian_email || '').trim(),
+      guardianRelationship: String(data.guardian_relationship || '').trim(),
+      medicalNotes: String(data.medical_notes || data.medical || '').trim(),
+      specialConsiderations: String(data.special_considerations || '').trim(),
       createdAt
     })
   );
@@ -407,7 +467,28 @@ function normalizeRegistrationSubmission_(data) {
     primaryPerson:     people[0] || null,
     people:            people,
     roster:            people,
+    age:               people[0] ? people[0].age : '',
+    ageGroup:          people[0] ? people[0].ageGroup : '',
+    isMinor:           people[0] ? people[0].isMinor : false,
+    guardianName:      String(data.guardian_name || (people[0] ? people[0].guardianName : '') || '').trim(),
+    guardianPhone:     String(data.guardian_phone || (people[0] ? people[0].guardianPhone : '') || '').trim(),
+    guardianEmail:     String(data.guardian_email || (people[0] ? people[0].guardianEmail : '') || '').trim(),
+    guardianRelationship: String(data.guardian_relationship || (people[0] ? people[0].guardianRelationship : '') || '').trim(),
     lodgingPreference: lodgingPreference,
+    lodgingOptionKey:  lodgingPreference,
+    lodgingOptionLabel: option ? option.label : String(data.lodging_option_label || '').trim(),
+    attendanceType:    option ? option.attendanceType : String(data.attendance_type || '').trim(),
+    programType:       programType,
+    shirtSize:         normalizeShirtSize_(data.shirt_size || (people[0] ? people[0].shirtSize : '')),
+    priceSelected:     data.price_selected !== undefined && data.price_selected !== '' ? Number(data.price_selected) || 0 : (option ? option.price : ''),
+    paymentStatus:     normalizePaymentStatus_(data.payment_status || data.paymentStatus || ''),
+    paymentReference:  String(data.payment_reference || data.transaction_id || data.transactionId || data.order_id || '').trim(),
+    paymentMethod:     String(data.payment_method || data.paymentMethod || CONFIG.payments.defaultMethod).trim(),
+    frontendTotal:     data.frontend_total !== undefined && data.frontend_total !== '' ? Number(data.frontend_total) || 0 : '',
+    squareTotal:       data.square_total !== undefined && data.square_total !== '' ? Number(data.square_total) || 0 : '',
+    amountPaid:        data.amount_paid !== undefined && data.amount_paid !== '' ? Number(data.amount_paid) || 0 : '',
+    medicalNotes:      String(data.medical_notes || data.medical || '').trim(),
+    specialConsiderations: String(data.special_considerations || '').trim(),
     lodgingStatus:     deriveRegistrationLodgingStatus_(people),
     bunkTypeSummary:   deriveBunkTypeSummary_(people),
     assignedLodgingArea: String(data.assigned_lodging_area || data.cabin_assignment || '').trim(),
@@ -445,10 +526,26 @@ function parsePeopleInput_(data) {
       email:      email,
       phone:      phone,
       age_group:  String(data.age_group || 'adult').trim().toLowerCase(),
+      age:        data.age || '',
+      is_minor:   data.is_minor || '',
       is_guardian: data.is_guardian !== undefined ? data.is_guardian : true,
+      guardian_name: data.guardian_name || '',
+      guardian_phone: data.guardian_phone || '',
+      guardian_email: data.guardian_email || '',
+      guardian_relationship: data.guardian_relationship || '',
       guardian_registration_id: data.guardian_registration_id || '',
       guardian_link_key: data.guardian_link_key || '',
-      lodging_preference: data.lodging_preference || '',
+      lodging_preference: data.lodging_option_key || data.lodging_preference || '',
+      lodging_option_key: data.lodging_option_key || data.lodging_preference || '',
+      lodging_option_label: data.lodging_option_label || '',
+      attendance_type: data.attendance_type || '',
+      program_type: data.program_type || '',
+      shirt_size: data.shirt_size || '',
+      price_selected: data.price_selected || '',
+      payment_status: data.payment_status || '',
+      payment_reference: data.payment_reference || data.transaction_id || '',
+      medical_notes: data.medical_notes || '',
+      special_considerations: data.special_considerations || '',
       lodging_status: data.lodging_status || 'pending',
       bunk_type: data.bunk_type || 'none',
       assigned_lodging_area: data.assigned_lodging_area || data.cabin_assignment || '',
@@ -484,7 +581,9 @@ function normalizePersonRecord_(person, index, context) {
   const lastName  = String(person.last_name || person.lastName || split.lastName || '').trim();
   const fullName  = [firstName, lastName].filter(Boolean).join(' ').trim() || String(person.name || '').trim() || ('Participant ' + (index + 1));
 
+  const age = person.age !== undefined && person.age !== null && person.age !== '' ? Number(person.age) : '';
   const ageGroup = normalizeAgeGroup_(person);
+  const isMinor = age !== '' ? age < CONFIG.ageRules.adultMinAge : ageGroup === 'child';
   const isGuardian = toBoolean_(person.is_guardian !== undefined ? person.is_guardian : person.isGuardian)
     || (index === 0 && ageGroup === 'adult');
 
@@ -507,17 +606,29 @@ function normalizePersonRecord_(person, index, context) {
     lastName:                 lastName,
     email:                    String(person.email || context.defaultEmail || '').trim(),
     phone:                    String(person.phone || context.defaultPhone || '').trim(),
-    age:                      person.age !== undefined && person.age !== null && person.age !== '' ? Number(person.age) : '',
+    age:                      age,
     ageGroup:                 ageGroup,
+    isMinor:                  isMinor,
     gender:                   String(person.gender || '').trim(),
     isGuardian:               isGuardian,
+    guardianName:             String(person.guardian_name || person.guardianName || context.guardianName || '').trim(),
+    guardianPhone:            String(person.guardian_phone || person.guardianPhone || context.guardianPhone || '').trim(),
+    guardianEmail:            String(person.guardian_email || person.guardianEmail || context.guardianEmail || '').trim(),
+    guardianRelationship:     String(person.guardian_relationship || person.guardianRelationship || context.guardianRelationship || '').trim(),
     guardianRegistrationId:   guardianRegistrationId,
     guardianLinkKey:          guardianLinkKey,
     lodgingPreference:        lodgingPreference,
+    lodgingOptionKey:         String(person.lodging_option_key || person.lodgingOptionKey || context.lodgingOptionKey || lodgingPreference).trim(),
+    lodgingOptionLabel:       String(person.lodging_option_label || person.lodgingOptionLabel || context.lodgingOptionLabel || '').trim(),
+    attendanceType:           String(person.attendance_type || person.attendanceType || context.attendanceType || '').trim(),
+    programType:              normalizeProgramType_(person.program_type || person.programType || context.programType || ''),
+    shirtSize:                normalizeShirtSize_(person.shirt_size || person.shirtSize || context.shirtSize || ''),
     lodgingStatus:            lodgingStatus,
     bunkType:                 bunkType,
     assignedLodgingArea:      String(person.assigned_lodging_area || person.assignedLodgingArea || person.cabin_assignment || '').trim(),
     notes:                    String(person.notes || '').trim(),
+    medicalNotes:             String(person.medical_notes || person.medicalNotes || context.medicalNotes || '').trim(),
+    specialConsiderations:    String(person.special_considerations || person.specialConsiderations || context.specialConsiderations || '').trim(),
     createdAt:                context.createdAt,
     // Legacy compatibility fields used by untouched admin/email/report code.
     role:                     ageGroup === 'child' ? 'child' : 'staff',
@@ -537,16 +648,19 @@ function normalizeAgeGroup_(person) {
   if (role === 'child') return 'child';
 
   const age = Number(person.age);
-  return !isNaN(age) && age < 18 ? 'child' : 'adult';
+  return !isNaN(age) && age < CONFIG.ageRules.adultMinAge ? 'child' : 'adult';
 }
 
 function normalizeLodgingPreference_(value) {
   const raw = String(value || '').trim().toLowerCase();
   const valid = CONFIG.lodging.validation.validPreferences;
   if (valid.includes(raw)) return raw;
-  if (raw === 'cabin_with_bath') return 'cabin_bath';
-  if (raw === 'cabin_without_bath') return 'cabin_no_bath';
-  return raw || 'tent';
+  if (raw === 'cabin_with_bath' || raw === 'shared cabin - connected restroom, linens provided') return 'shared_cabin_connected';
+  if (raw === 'cabin_without_bath' || raw === 'shared cabin - detached restroom/shower, bring your own linens') return 'shared_cabin_detached';
+  if (raw === 'rv') return 'rv_hookups';
+  if (raw === 'tent') return 'tent_no_hookups';
+  if (raw === 'sabbath_only' || raw === 'sabbath attendance only') return 'sabbath_attendance_only';
+  return raw || 'tent_no_hookups';
 }
 
 function normalizeBunkType_(value) {
@@ -557,8 +671,9 @@ function normalizeBunkType_(value) {
 
 function defaultBunkTypeForPreference_(lodgingPreference, lodgingStatus) {
   if (lodgingStatus === 'manual_review' || lodgingStatus === 'waitlist') return 'none';
-  if (lodgingPreference === 'rv') return 'rv';
-  if (lodgingPreference === 'tent') return 'tent';
+  if (lodgingPreference === 'rv_hookups') return 'rv';
+  if (lodgingPreference === 'tent_no_hookups') return 'tent';
+  if (lodgingPreference === 'sabbath_attendance_only') return 'day_only';
   return 'none';
 }
 
@@ -595,6 +710,109 @@ function toBoolean_(value) {
   if (typeof value === 'boolean') return value;
   const raw = String(value || '').trim().toLowerCase();
   return ['true', 'yes', '1', 'on'].includes(raw);
+}
+
+function normalizeProgramType_(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === CONFIG.programs.youngMens.key) return CONFIG.programs.youngMens.key;
+  return CONFIG.programs.standard.key;
+}
+
+function normalizeShirtSize_(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  return CONFIG.shirts.sizes[raw] !== undefined ? raw : raw;
+}
+
+function normalizePaymentStatus_(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return CONFIG.payments.acceptedStatuses.includes(raw) ? raw : 'pending';
+}
+
+function summarizeCountsByField_(rows, fieldName) {
+  return (rows || []).reduce((acc, row) => {
+    const key = String(row[fieldName] || '').trim();
+    if (!key) return acc;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function validateRegistrationSubmission_(ss, normalized) {
+  const errors = [];
+  const flags = {
+    forceManualReview: false,
+    manualReviewReasons: [],
+    inventoryMessages: []
+  };
+  const primary = normalized.primaryPerson || {};
+  const option = getRegistrationOptionByKey_(normalized.lodgingOptionKey || normalized.lodgingPreference || '');
+
+  if (!normalized.firstName || !normalized.lastName) errors.push('Registrant first and last name are required.');
+  if (!normalized.registrantEmail) errors.push('Registrant email is required.');
+  if (primary.age === '' || isNaN(Number(primary.age))) errors.push('Registrant age is required.');
+  if (!option) errors.push('A valid registration option is required.');
+  if (!normalized.shirtSize) errors.push('Shirt size is required.');
+
+  const primaryIsMinor = !!primary.isMinor;
+  if (primaryIsMinor) {
+    if (!normalized.guardianName || !normalized.guardianPhone || !normalized.guardianEmail || !normalized.guardianRelationship) {
+      flags.forceManualReview = true;
+      flags.manualReviewReasons.push('Minor is missing guardian name, phone, email, or relationship.');
+    }
+  }
+
+  if (normalized.programType === CONFIG.programs.youngMens.key) {
+    const age = Number(primary.age);
+    if (isNaN(age) || age < CONFIG.programs.youngMens.minAge || age > CONFIG.programs.youngMens.maxAge) {
+      errors.push("Young Men's program is only available for ages 10-14.");
+    }
+    if (!primaryIsMinor) {
+      errors.push("Young Men's program registrants must be minors with guardian information on file.");
+    }
+  }
+
+  const inventory = checkInventoryAvailability_(ss, normalized);
+  if (!inventory.valid) {
+    inventory.messages.forEach(message => {
+      if (message.indexOf('Shirt size') === 0) {
+        flags.forceManualReview = true;
+        flags.manualReviewReasons.push(message);
+      } else {
+        flags.inventoryMessages.push(message);
+      }
+    });
+  }
+
+  if (errors.length) {
+    return {
+      success: false,
+      message: errors.join(' '),
+      errors: errors,
+      manualReview: flags.forceManualReview,
+      waitlistAvailable: flags.inventoryMessages.some(err => err.indexOf('sold out') >= 0)
+    };
+  }
+
+  return {
+    success: true,
+    flags: flags
+  };
+}
+
+function applyValidationFlagsToAssignedRegistration_(assigned, validation) {
+  const flags = validation && validation.flags ? validation.flags : null;
+  if (!flags) return;
+
+  if (flags.forceManualReview) {
+    (assigned.people || []).forEach(person => {
+      person.lodgingStatus = 'manual_review';
+      person.bunkType = 'none';
+      person.assignmentReason = [person.assignmentReason].concat(flags.manualReviewReasons).filter(Boolean).join(' ');
+      person.consumesPublicInventory = false;
+    });
+    assigned.lodgingStatus = 'manual_review';
+    assigned.bunkTypeSummary = 'none';
+  }
 }
 
 /**

@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #f5f1e7;
+      --card: #ffffff;
+      --ink: #263238;
+      --muted: #6b7280;
+      --line: #d7d2c9;
+      --brand: #355c4f;
+      --brand-dark: #254237;
+      --accent: #a55a1f;
+      --ok: #2e7d32;
+      --warn: #b26a00;
+      --danger: #b00020;
+      --soft-green: #e8f5e9;
+      --soft-blue: #e3f2fd;
+      --soft-gold: #fff8e1;
+      --soft-red: #fde8e8;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 13px/1.45 Georgia, "Palatino Linotype", serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #f3efe4 0%, #f8f5ed 100%);
+    }
+    .header {
+      padding: 16px;
+      background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%);
+      color: #fff;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .header-icon { font-size: 26px; }
+    .header-title { font-size: 17px; font-weight: 700; }
+    .header-sub { font-size: 11px; opacity: .85; }
+    .content { padding: 12px; }
+    .search-row, .form-row { display: grid; gap: 8px; }
+    .search-row { grid-template-columns: 1fr auto; margin-bottom: 10px; }
+    .form-row.two { grid-template-columns: 1fr 1fr; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 16px rgba(0,0,0,.05);
+      margin-bottom: 10px;
+    }
+    .card-header {
+      padding: 12px 14px;
+      background: #f7f3ea;
+      border-bottom: 1px solid var(--line);
+    }
+    .card-body { padding: 12px 14px; }
+    .card-title { font-weight: 700; font-size: 14px; }
+    .card-sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .muted { color: var(--muted); }
+    .results-list, .roster-list { display: grid; gap: 8px; }
+    .result-item, .queue-item, .roster-row {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+    }
+    .result-item, .queue-item { cursor: pointer; }
+    .result-item:hover, .queue-item:hover { border-color: #b8b1a6; }
+    .result-label, .roster-name { font-weight: 700; }
+    .result-sub, .roster-meta, .tiny { color: var(--muted); font-size: 11px; }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .stat-box {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fff;
+    }
+    .stat-value { font-size: 20px; font-weight: 700; line-height: 1.1; }
+    .stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .pill, .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      margin-left: 6px;
+    }
+    .pill-ok, .badge-ok { background: #dff3e4; color: #20602a; }
+    .pill-warn, .badge-warn { background: #fff3d6; color: #8a5300; }
+    .pill-danger, .badge-danger { background: #fde8e8; color: #8d1025; }
+    .pill-info, .badge-info { background: #e5efff; color: #294f87; }
+    .status {
+      display: none;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .status.info { display: block; background: var(--soft-blue); color: #1e4b87; }
+    .status.success { display: block; background: var(--soft-green); color: #1d5d27; }
+    .status.error { display: block; background: var(--soft-red); color: #8d1025; }
+    .section-title { font-weight: 700; margin: 10px 0 8px; }
+    .btn {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 9px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .btn:disabled { opacity: .6; cursor: default; }
+    .btn-primary { background: var(--brand); color: #fff; }
+    .btn-primary:hover { background: var(--brand-dark); }
+    .btn-secondary { background: #fff; border-color: var(--line); color: var(--ink); }
+    .btn-danger { background: #b00020; color: #fff; }
+    .btn-success { background: #2e7d32; color: #fff; }
+    .btn-full { width: 100%; margin-top: 6px; }
+    .btn-row { display: grid; gap: 8px; }
+    .input, .select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: inherit;
+      background: #fff;
+    }
+    .input:focus, .select:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 2px rgba(53,92,79,.12);
+    }
+    .label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .divider { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      text-align: center;
+      color: var(--muted);
+      background: rgba(255,255,255,.7);
+    }
+    .back-btn {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--brand);
+      text-decoration: none;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .actions { display: grid; gap: 6px; }
+    .inline-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.35);
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .overlay.open { display: flex; }
+    .confirm-box {
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      width: 100%;
+      max-width: 340px;
+      padding: 14px;
+    }
+    .confirm-title { font-weight: 700; margin-bottom: 6px; }
+    .confirm-body { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+    .confirm-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.45);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-icon">🏕️</div>
+    <div>
+      <div class="header-title"><?= panelTitle ?></div>
+      <div class="header-sub"><?= panelSubtitle ?></div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="search-row">
+      <input id="searchInput" class="input" type="text" placeholder="Search by name, registration ID, email, or phone">
+      <button id="searchBtn" class="btn btn-primary" onclick="doSearch()">Search</button>
+    </div>
+
+    <div id="panelSearch" class="panel active">
+      <div id="dashboardContainer"></div>
+      <div id="searchResults" class="card">
+        <div class="card-body">
+          <div class="empty">Search for a registration or person to open lodging details.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Tools</div>
+          <div class="card-sub">Existing admin utilities kept where still useful</div>
+        </div>
+        <div class="card-body">
+          <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminGenerateClubDashboards')">Generate Registration Dashboards</button>
+          <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminGenerateCampingCoordinatorSummary')">Generate Lodging Summary</button>
+          <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminValidateDataIntegrity')">Validate Data Integrity</button>
+          <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminFindDuplicates')">Find Duplicates</button>
+          <button class="btn btn-primary btn-full" onclick="openQueuePanel()">Open Lodging Queue</button>
+          <div id="toolStatus" class="status"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panelDetails" class="panel">
+      <div id="detailsContainer"></div>
+    </div>
+
+    <div id="panelAddAttendee" class="panel">
+      <div class="card">
+        <div class="card-header">
+          <a class="back-btn" onclick="showPanel('details')">← Back to Registration</a>
+          <div class="card-title">Add Person</div>
+          <div id="addMeta" class="card-sub"></div>
+        </div>
+        <div class="card-body">
+          <label class="label">Full Name</label>
+          <input id="addName" class="input" type="text" placeholder="First Last">
+          <div class="form-row two">
+            <div>
+              <label class="label">Age Group</label>
+              <select id="addAgeGroup" class="select" onchange="onAgeGroupChange()">
+                <option value="adult">Adult</option>
+                <option value="child">Child</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Age</label>
+              <input id="addAge" class="input" type="number" min="0" max="120">
+            </div>
+          </div>
+          <div class="form-row two">
+            <div>
+              <label class="label">Email</label>
+              <input id="addEmail" class="input" type="email" placeholder="optional@example.com">
+            </div>
+            <div>
+              <label class="label">Phone</label>
+              <input id="addPhone" class="input" type="text" placeholder="optional phone">
+            </div>
+          </div>
+          <div class="form-row two">
+            <div>
+              <label class="label">Lodging Preference</label>
+              <select id="addLodgingPreference" class="select">
+                <option value="cabin_no_bath">Cabin No Bath</option>
+                <option value="cabin_bath">Cabin With Bath</option>
+                <option value="rv">RV</option>
+                <option value="tent">Tent</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Guardian Link Key</label>
+              <input id="addGuardianLinkKey" class="input" type="text" placeholder="child link key">
+            </div>
+          </div>
+          <div id="guardianRegistrationWrap">
+            <label class="label">Guardian Registration ID</label>
+            <input id="addGuardianRegistrationId" class="input" type="text" placeholder="optional linked registration">
+          </div>
+          <label class="label">Notes / Dietary</label>
+          <input id="addNotes" class="input" type="text" placeholder="notes">
+          <div class="inline-grid" style="margin-top:8px">
+            <label><input id="addIsGuardian" type="checkbox" checked> Guardian</label>
+            <label><input id="addFirstTime" type="checkbox"> First-Time</label>
+          </div>
+          <div class="inline-grid" style="margin-top:6px">
+            <label><input id="addMedical" type="checkbox"> Medical</label>
+            <label><input id="addMG" type="checkbox"> MG</label>
+          </div>
+          <div id="addStatus" class="status"></div>
+          <button class="btn btn-success btn-full" onclick="submitAddAttendee()">Add Person</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="panelRemoveAttendee" class="panel">
+      <div class="card">
+        <div class="card-header">
+          <a class="back-btn" onclick="showPanel('details')">← Back to Registration</a>
+          <div class="card-title">Remove Person</div>
+          <div id="removeMeta" class="card-sub"></div>
+        </div>
+        <div class="card-body">
+          <div id="removeList"></div>
+          <div id="removeStatus" class="status"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panelAssignments" class="panel">
+      <div class="card">
+        <div class="card-header">
+          <a class="back-btn" onclick="showPanel('search')">← Back to Search</a>
+          <div class="card-title">Lodging Queue</div>
+          <div class="card-sub">Registrations needing assignment work or review</div>
+        </div>
+        <div class="card-body">
+          <div id="queueSummary"></div>
+          <div id="queueList"></div>
+          <div id="queueStatus" class="status"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirmOverlay" class="overlay">
+    <div class="confirm-box">
+      <div id="confirmTitle" class="confirm-title"></div>
+      <div id="confirmBody" class="confirm-body"></div>
+      <div class="confirm-btns">
+        <button class="btn btn-secondary" onclick="closeConfirm()">Cancel</button>
+        <button class="btn btn-danger" onclick="runConfirm()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    'use strict';
+
+    var currentRegId = null;
+    var currentRegistration = null;
+    var pendingAction = null;
+    var pendingArg = null;
+    var PANELS = ['panelSearch', 'panelDetails', 'panelAddAttendee', 'panelRemoveAttendee', 'panelAssignments'];
+
+    document.getElementById('searchInput').addEventListener('keydown', function(event) {
+      if (event.key === 'Enter') doSearch();
+    });
+
+    function showPanel(name) {
+      var idMap = {
+        search: 'panelSearch',
+        details: 'panelDetails',
+        addAttendee: 'panelAddAttendee',
+        removeAttendee: 'panelRemoveAttendee',
+        assignments: 'panelAssignments'
+      };
+      PANELS.forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.remove('active');
+      });
+      var target = document.getElementById(idMap[name] || name);
+      if (target) target.classList.add('active');
+      window.scrollTo(0, 0);
+    }
+
+    function doSearch() {
+      var query = document.getElementById('searchInput').value.trim();
+      if (query.length < 2) return setStatus('searchResults', 'info', 'Please enter at least 2 characters.');
+      var btn = document.getElementById('searchBtn');
+      btn.innerHTML = '<span class="spinner"></span>';
+      btn.disabled = true;
+      google.script.run
+        .withSuccessHandler(function(data) {
+          btn.innerHTML = 'Search';
+          btn.disabled = false;
+          renderSearchResults(data);
+        })
+        .withFailureHandler(function(err) {
+          btn.innerHTML = 'Search';
+          btn.disabled = false;
+          document.getElementById('searchResults').innerHTML =
+            '<div class="card"><div class="card-body"><div class="status error" style="display:block">Error: ' + esc(err.message) + '</div></div></div>';
+        })
+        .adminPanelSearch(query);
+    }
+
+    function renderSearchResults(data) {
+      var results = Array.isArray(data) ? data : ((data && data.results) || []);
+      var totalFound = (data && data.totalFound) || results.length;
+      var truncated = !!(data && data.truncated);
+      if (!results.length) {
+        document.getElementById('searchResults').innerHTML =
+          '<div class="card"><div class="card-body"><div class="empty">No results found.</div></div></div>';
+        return;
+      }
+      var html = '<div class="card"><div class="card-header"><div class="card-title">' + results.length + ' Result' +
+        (results.length !== 1 ? 's' : '') + '</div></div><div class="card-body"><div class="results-list">';
+      results.forEach(function(item) {
+        var pill = item.needsAttention ? '<span class="pill pill-danger">Needs Attention</span>' : '';
+        html += '<div class="result-item" onclick="loadRegistrationDetails(\'' + esc(item.registrationId) + '\')">' +
+          '<div class="result-label">' + esc(item.label) + pill + '</div>' +
+          '<div class="result-sub">' + esc(item.sublabel || '') + '</div></div>';
+      });
+      if (truncated) {
+        html += '<div class="tiny">Showing ' + results.length + ' of ' + totalFound + ' results.</div>';
+      }
+      html += '</div></div></div>';
+      document.getElementById('searchResults').innerHTML = html;
+    }
+
+    function loadDashboard() {
+      google.script.run
+        .withSuccessHandler(renderDashboard)
+        .withFailureHandler(function(err) {
+          document.getElementById('dashboardContainer').innerHTML =
+            '<div class="card"><div class="card-body"><div class="status error" style="display:block">Dashboard error: ' + esc(err.message) + '</div></div></div>';
+        })
+        .adminPanelGetInventorySummary();
+    }
+
+    function renderDashboard(data) {
+      var inventory = data && data.inventory ? data.inventory : {};
+      var attention = data && data.attention ? data.attention : {};
+      var cards = [
+        { title: 'Cabin No Bath', item: inventory.cabinNoBath, bg: 'var(--soft-green)' },
+        { title: 'Cabin With Bath', item: inventory.cabinBath, bg: 'var(--soft-blue)' },
+        { title: 'RV', item: inventory.rv, bg: 'var(--soft-gold)' },
+        { title: 'Tent', item: inventory.tent, bg: '#f5ebff' }
+      ];
+      var html = '<div class="card"><div class="card-header"><div class="card-title">Lodging Dashboard</div>' +
+        '<div class="card-sub">Inventory totals and flagged records</div></div><div class="card-body"><div class="stats-grid">';
+      cards.forEach(function(card) {
+        var item = card.item || {};
+        var main = card.title === 'Tent'
+          ? String(item.used || 0)
+          : String(item.used || 0) + ' / ' + String(item.capacity === '' || item.capacity === undefined ? 'Unlimited' : item.capacity);
+        var sub = card.title === 'Tent'
+          ? 'Tent assignments'
+          : 'Remaining ' + String(item.remaining === '' ? 'Unlimited' : item.remaining);
+        html += '<div class="stat-box" style="background:' + card.bg + '"><div class="stat-value">' + esc(main) + '</div>' +
+          '<div class="stat-label">' + esc(card.title + ' · ' + sub) + '</div></div>';
+      });
+      html += '</div><div class="stats-grid">' +
+        statBox(attention.childWithoutGuardian || 0, 'Child Without Guardian') +
+        statBox(attention.waitlistedCabinRequests || 0, 'Waitlisted Cabin') +
+        statBox(attention.invalidLodgingChoice || 0, 'Invalid Choice') +
+        statBox((attention.registrationsNeedingAttention || []).length, 'Records Needing Attention') +
+        '</div>';
+      var queue = attention.registrationsNeedingAttention || [];
+      if (queue.length) {
+        html += '<div class="section-title">Priority Queue</div><div class="roster-list">';
+        queue.slice(0, 6).forEach(function(item) {
+          html += '<div class="queue-item" onclick="loadRegistrationDetails(\'' + esc(item.registrationId) + '\')">' +
+            '<div class="result-label">' + esc(item.registrationLabel || item.registrationId) + '</div>' +
+            '<div class="result-sub">' + esc((item.primaryContactName || '') + ' · ' + (item.lodgingPreference || '') + ' · ' + (item.lodgingStatus || '')) + '</div></div>';
+        });
+        html += '</div>';
+      }
+      html += '</div></div>';
+      document.getElementById('dashboardContainer').innerHTML = html;
+    }
+
+    function loadRegistrationDetails(registrationId) {
+      currentRegId = registrationId;
+      showPanel('details');
+      document.getElementById('detailsContainer').innerHTML = '<div class="card"><div class="card-body"><div class="empty">Loading…</div></div></div>';
+      google.script.run
+        .withSuccessHandler(function(data) {
+          if (data.error) {
+            document.getElementById('detailsContainer').innerHTML =
+              '<div class="card"><div class="card-body"><div class="status error" style="display:block">' + esc(data.error) + '</div></div></div>';
+            return;
+          }
+          currentRegistration = data;
+          renderRegistrationDetails(data);
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('detailsContainer').innerHTML =
+            '<div class="card"><div class="card-body"><div class="status error" style="display:block">Error: ' + esc(err.message) + '</div></div></div>';
+        })
+        .adminPanelGetClubDetails(registrationId);
+    }
+
+    function renderRegistrationDetails(data) {
+      var flags = data.attentionFlags || [];
+      var html = '<div class="card"><div class="card-header">' +
+        '<a class="back-btn" onclick="showPanel(\'search\')">← Back to Results</a>' +
+        '<div class="card-title">' + esc(data.registrationLabel || data.registrationId) + statusPill(data.lodgingStatus) + '</div>' +
+        '<div class="card-sub">' + esc(data.registrationId + ' · ' + (data.primaryContactName || '') + ' · ' + (data.primaryContactEmail || '')) + '</div>' +
+        '</div><div class="card-body">' +
+        '<div class="stats-grid">' +
+          statBox((data.headcount && data.headcount.adults) || 0, 'Adults') +
+          statBox((data.headcount && data.headcount.guardians) || 0, 'Guardians') +
+          statBox((data.headcount && data.headcount.children) || 0, 'Children') +
+          statBox((data.headcount && data.headcount.waitlisted) || 0, 'Waitlisted') +
+        '</div>' +
+        '<div class="stats-grid">' +
+          statBox((data.lodgingPreference || 'unknown').replace(/_/g, ' '), 'Preference') +
+          statBox((data.lodgingStatus || 'pending').replace(/_/g, ' '), 'Status') +
+          statBox(data.assignedLodgingArea || 'Unassigned', 'Assigned Area') +
+          statBox(data.bunkTypeSummary || 'none', 'Bunk Types') +
+        '</div>' +
+        '<div class="section-title">Attention Flags</div>' +
+        (flags.length ? renderFlags(flags) : '<div class="tiny">No active lodging alerts.</div>') +
+        '<div class="divider"></div>' +
+        '<div class="section-title">Actions</div>' +
+        '<div class="actions">' +
+          '<button class="btn btn-primary" id="pdfBtn" onclick="handleGeneratePDF()">Generate / View PDF</button>' +
+          '<button class="btn btn-primary" id="emailBtn" onclick="handleResendEmail()">Resend Confirmation Email</button>' +
+          '<button class="btn btn-secondary" onclick="openAddPanel()">Add Person</button>' +
+          '<button class="btn btn-secondary" onclick="openRemovePanel()">Remove Person</button>' +
+          '<button class="btn btn-danger" onclick="handleDeleteReg()">Delete Registration</button>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        renderCheckInSection(data) +
+        '<div class="divider"></div>' +
+        renderManualUpdateSection(data) +
+        '<div class="divider"></div>' +
+        '<div class="section-title">Financial Overrides</div>' +
+        '<div class="form-row two"><input id="overrideTotalInput" class="input" type="number" step="0.01" placeholder="New total">' +
+          '<button class="btn btn-secondary" onclick="handleOverrideTotal()">Update Total</button></div>' +
+        '<button class="btn btn-secondary btn-full" onclick="handleRevokeDiscount()">Revoke Meal Discount</button>' +
+        '<div id="checkinResult"></div>' +
+        '<div id="detailsStatus" class="status"></div>' +
+        '<div class="divider"></div>' +
+        '<div class="section-title">Roster</div>' +
+        renderRosterList(data.roster || [], false) +
+        '</div></div>';
+      document.getElementById('detailsContainer').innerHTML = html;
+    }
+
+    function renderManualUpdateSection(data) {
+      return '<div class="section-title">Manual Lodging Update</div>' +
+        '<div class="tiny">Update registration-level lodging status and attendee bunk details. TODO: bed-by-bed cabin mapping is not implemented yet.</div>' +
+        '<div class="form-row two" style="margin-top:8px"><div><label class="label">Registration Status</label><select id="manualLodgingStatus" class="select">' +
+          optionList(['assigned','waitlist','pending','manual_review'], data.lodgingStatus) +
+        '</select></div><div><label class="label">Assigned Area</label><input id="manualAssignedArea" class="input" type="text" value="' + esc(data.assignedLodgingArea || '') + '"></div></div>' +
+        '<label class="label">Notes</label><input id="manualNotes" class="input" type="text" value="' + esc(data.notes || '') + '">' +
+        renderRosterEditor(data.roster || []) +
+        '<button class="btn btn-success btn-full" onclick="saveLodgingEdits()">Save Lodging Updates</button>';
+    }
+
+    function renderCheckInSection(data) {
+      var summary = data.checkInSummary || { total: 0, eligible: 0, arrived: 0, blocked: 0 };
+      var roster = data.roster || [];
+      var html = '<div class="section-title">On-Site Check-In</div>' +
+        '<div class="stats-grid">' +
+          statBox(summary.eligible || 0, 'Eligible') +
+          statBox(summary.arrived || 0, 'Arrived') +
+          statBox(summary.blocked || 0, 'Blocked') +
+          statBox(summary.total || roster.length, 'Total') +
+        '</div>' +
+        '<div id="checkinResult"></div>';
+
+      if (!roster.length) return html + '<div class="empty">No attendees available for check-in.</div>';
+
+      html += '<div class="roster-list">';
+      roster.forEach(function(person) {
+        var blocked = person.lodgingStatus === 'waitlist' || person.lodgingStatus === 'manual_review';
+        var arrived = person.checkInStatus === 'arrived';
+        var action = arrived
+          ? '<button class="btn btn-secondary btn-full" disabled>Checked In' + (person.checkInTimestampDisplay ? ' · ' + esc(person.checkInTimestampDisplay) : '') + '</button>'
+          : (blocked
+              ? '<button class="btn btn-secondary btn-full" disabled>Blocked</button>'
+              : '<button class="btn btn-success btn-full" onclick="handleAttendeeCheckIn(\'' + esc(person.attendeeId) + '\')">Check In</button>');
+
+        html += '<div class="roster-row"><div class="roster-name">' + esc(person.name) + personPills(person) + '</div>' +
+          '<div class="roster-meta">' + esc(buildCheckInMeta(person)) + '</div>' +
+          (blocked ? '<div class="tiny">Blocked: ' + esc(person.lodgingStatus.replace(/_/g, ' ')) + (person.assignmentReason ? ' · ' + esc(person.assignmentReason) : '') + '</div>' : '') +
+          (person.notes ? '<div class="tiny">Notes: ' + esc(person.notes) + '</div>' : '') +
+          action + '</div>';
+      });
+      return html + '</div>';
+    }
+
+    function renderRosterList(roster, removable) {
+      if (!roster.length) return '<div class="empty">No people on this registration.</div>';
+      var html = '<div class="roster-list">';
+      roster.forEach(function(person) {
+        html += '<div class="roster-row"><div class="roster-name">' + esc(person.name) + personPills(person) + '</div>' +
+          '<div class="roster-meta">' + esc(buildPersonMeta(person)) + '</div>' +
+          (person.assignmentReason ? '<div class="tiny">' + esc(person.assignmentReason) + '</div>' : '') +
+          (removable ? '<button class="btn btn-danger btn-full" style="margin-top:8px" onclick="confirmRemove(\'' + esc(person.attendeeId) + '\',\'' + esc(person.name).replace(/'/g, '&#39;') + '\')">Remove</button>' : '') +
+          '</div>';
+      });
+      return html + '</div>';
+    }
+
+    function renderRosterEditor(roster) {
+      if (!roster.length) return '<div class="empty" style="margin-top:8px">No people to edit.</div>';
+      var html = '<div class="roster-list" style="margin-top:8px">';
+      roster.forEach(function(person, index) {
+        html += '<div class="roster-row"><div class="roster-name">' + esc(person.name) + '</div>' +
+          '<div class="roster-meta">' + esc(buildPersonMeta(person)) + '</div>' +
+          '<div class="form-row two" style="margin-top:8px"><div><label class="label">Status</label><select id="edit-status-' + index + '" class="select">' +
+            optionList(['assigned','waitlist','pending','manual_review'], person.lodgingStatus) +
+          '</select></div><div><label class="label">Bunk Type</label><select id="edit-bunk-' + index + '" class="select">' +
+            optionList(['bottom','top_guardian_child','rv','tent','none'], person.bunkType) +
+          '</select></div></div>' +
+          '<div class="form-row two"><div><label class="label">Assigned Area</label><input id="edit-area-' + index + '" class="input" type="text" value="' + esc(person.assignedLodgingArea || '') + '"></div>' +
+          '<div><label class="label">Guardian Link Key</label><input id="edit-link-' + index + '" class="input" type="text" value="' + esc(person.guardianLinkKey || '') + '"></div></div>' +
+          '<div class="form-row two"><div><label class="label">Guardian Registration ID</label><input id="edit-guardian-reg-' + index + '" class="input" type="text" value="' + esc(person.guardianRegistrationId || '') + '"></div>' +
+          '<div><label class="label">Notes</label><input id="edit-notes-' + index + '" class="input" type="text" value="' + esc(person.notes || '') + '"></div></div>' +
+          '<label class="tiny"><input id="edit-guardian-' + index + '" type="checkbox"' + (person.isGuardian ? ' checked' : '') + '> Guardian</label>' +
+          '<input id="edit-attendee-' + index + '" type="hidden" value="' + esc(person.attendeeId) + '">' +
+          '</div>';
+      });
+      return html + '</div>';
+    }
+
+    function renderFlags(flags) {
+      var html = '<div class="roster-list">';
+      flags.forEach(function(flag) {
+        html += '<div class="roster-row"><div class="roster-name">' + esc(flag.label) + '<span class="pill pill-danger">Attention</span></div>' +
+          '<div class="roster-meta">' + esc(flag.detail) + '</div></div>';
+      });
+      return html + '</div>';
+    }
+
+    function openAddPanel() {
+      document.getElementById('addMeta').textContent = currentRegId || '';
+      document.getElementById('addName').value = '';
+      document.getElementById('addAge').value = '';
+      document.getElementById('addEmail').value = '';
+      document.getElementById('addPhone').value = '';
+      document.getElementById('addGuardianLinkKey').value = '';
+      document.getElementById('addGuardianRegistrationId').value = '';
+      document.getElementById('addNotes').value = '';
+      document.getElementById('addAgeGroup').value = 'adult';
+      document.getElementById('addLodgingPreference').value = currentRegistration && currentRegistration.lodgingPreference ? currentRegistration.lodgingPreference : 'tent';
+      document.getElementById('addIsGuardian').checked = true;
+      document.getElementById('addFirstTime').checked = false;
+      document.getElementById('addMedical').checked = false;
+      document.getElementById('addMG').checked = false;
+      clearStatus('addStatus');
+      onAgeGroupChange();
+      showPanel('addAttendee');
+    }
+
+    function onAgeGroupChange() {
+      var isChild = document.getElementById('addAgeGroup').value === 'child';
+      document.getElementById('guardianRegistrationWrap').style.display = isChild ? 'block' : 'none';
+      if (isChild) document.getElementById('addIsGuardian').checked = false;
+    }
+
+    function submitAddAttendee() {
+      var name = document.getElementById('addName').value.trim();
+      var age = parseInt(document.getElementById('addAge').value, 10);
+      if (!name) return setStatus('addStatus', 'error', 'Name is required.');
+      if (isNaN(age) || age < 0) return setStatus('addStatus', 'error', 'Age is required.');
+      setStatus('addStatus', 'info', 'Adding person…');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('addStatus', result.success ? 'success' : 'error', result.message);
+          if (result.success) {
+            loadDashboard();
+            setTimeout(function() { loadRegistrationDetails(currentRegId); }, 900);
+          }
+        })
+        .withFailureHandler(function(err) {
+          setStatus('addStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelAddAttendee(currentRegId, {
+          name: name,
+          age: age,
+          ageGroup: document.getElementById('addAgeGroup').value,
+          email: document.getElementById('addEmail').value.trim(),
+          phone: document.getElementById('addPhone').value.trim(),
+          isGuardian: document.getElementById('addIsGuardian').checked,
+          guardianLinkKey: document.getElementById('addGuardianLinkKey').value.trim(),
+          guardianRegistrationId: document.getElementById('addGuardianRegistrationId').value.trim(),
+          lodgingPreference: document.getElementById('addLodgingPreference').value,
+          dietary: document.getElementById('addNotes').value.trim(),
+          isFirstTime: document.getElementById('addFirstTime').checked,
+          isMedical: document.getElementById('addMedical').checked,
+          isMasterGuide: document.getElementById('addMG').checked
+        });
+    }
+
+    function openRemovePanel() {
+      document.getElementById('removeMeta').textContent = currentRegId || '';
+      document.getElementById('removeList').innerHTML = renderRosterList((currentRegistration && currentRegistration.roster) || [], true);
+      clearStatus('removeStatus');
+      showPanel('removeAttendee');
+    }
+
+    function confirmRemove(attendeeId, name) {
+      showConfirm('Remove Person?', 'Remove ' + name + ' (' + attendeeId + ')? Inventory will be recalculated.', 'removeAttendee', attendeeId);
+    }
+
+    function doRemoveAttendee(attendeeId) {
+      setStatus('removeStatus', 'info', 'Removing…');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('removeStatus', result.success ? 'success' : 'error', result.message);
+          if (result.success) {
+            loadDashboard();
+            setTimeout(function() { loadRegistrationDetails(currentRegId); }, 900);
+          }
+        })
+        .withFailureHandler(function(err) {
+          setStatus('removeStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelRemoveAttendee(currentRegId, attendeeId);
+    }
+
+    function saveLodgingEdits() {
+      if (!currentRegistration) return;
+      setStatus('detailsStatus', 'info', 'Saving lodging updates…');
+      var attendees = (currentRegistration.roster || []).map(function(person, index) {
+        return {
+          attendeeId: document.getElementById('edit-attendee-' + index).value,
+          lodgingStatus: document.getElementById('edit-status-' + index).value,
+          bunkType: document.getElementById('edit-bunk-' + index).value,
+          assignedLodgingArea: document.getElementById('edit-area-' + index).value.trim(),
+          guardianLinkKey: document.getElementById('edit-link-' + index).value.trim(),
+          guardianRegistrationId: document.getElementById('edit-guardian-reg-' + index).value.trim(),
+          notes: document.getElementById('edit-notes-' + index).value.trim(),
+          isGuardian: document.getElementById('edit-guardian-' + index).checked
+        };
+      });
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('detailsStatus', result.success ? 'success' : 'error', result.message);
+          if (result.success) {
+            loadDashboard();
+            setTimeout(function() { loadRegistrationDetails(currentRegId); }, 900);
+          }
+        })
+        .withFailureHandler(function(err) {
+          setStatus('detailsStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelUpdateLodgingDetails(currentRegId, {
+          lodgingStatus: document.getElementById('manualLodgingStatus').value,
+          assignedLodgingArea: document.getElementById('manualAssignedArea').value.trim(),
+          notes: document.getElementById('manualNotes').value.trim(),
+          attendees: attendees
+        });
+    }
+
+    function handleResendEmail() {
+      var email = currentRegistration ? currentRegistration.primaryContactEmail : 'the contact on file';
+      showConfirm('Resend Confirmation Email?', 'Resend the confirmation email to ' + email + '?', 'resendEmail');
+    }
+
+    function doResendEmail() {
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('detailsStatus', result.success ? 'success' : 'error', result.message);
+        })
+        .withFailureHandler(function(err) {
+          setStatus('detailsStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelResendEmail(currentRegId);
+    }
+
+    function handleDeleteReg() {
+      var label = currentRegistration ? currentRegistration.registrationLabel : currentRegId;
+      showConfirm('Delete Registration?', 'Permanently delete ' + label + ' (' + currentRegId + ')?', 'deleteReg');
+    }
+
+    function doDeleteReg() {
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            document.getElementById('detailsContainer').innerHTML =
+              '<div class="card"><div class="card-body"><div class="status success" style="display:block">' + esc(result.message) + '</div></div></div>';
+            currentRegistration = null;
+            currentRegId = null;
+            loadDashboard();
+          } else {
+            setStatus('detailsStatus', 'error', result.message);
+          }
+        })
+        .withFailureHandler(function(err) {
+          setStatus('detailsStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelDeleteRegistration(currentRegId);
+    }
+
+    function renderCheckInResult(result) {
+      var container = document.getElementById('checkinResult');
+      if (!container) return;
+      if (result.alreadyCheckedIn) {
+        container.innerHTML = '<div class="status info" style="display:block">' + esc(result.message) + '</div>';
+        return;
+      }
+      if (result.blocked) {
+        container.innerHTML = '<div class="status error" style="display:block">' + esc(result.message) + '</div>';
+        return;
+      }
+      if (!result.success) {
+        container.innerHTML = '<div class="status error" style="display:block">' + esc(result.message) + '</div>';
+        return;
+      }
+      container.innerHTML = '<div class="status success" style="display:block">' +
+        esc(result.attendeeName || 'Attendee') + ' checked in at ' + esc(result.checkInTimestamp || '') +
+        (result.assignedLodgingArea ? ' · ' + esc(result.assignedLodgingArea) : '') +
+        '</div>';
+    }
+
+    function handleAttendeeCheckIn(attendeeId) {
+      var container = document.getElementById('checkinResult');
+      if (container) {
+        container.innerHTML = '<div class="status info" style="display:block">Checking in attendee…</div>';
+      }
+      google.script.run
+        .withSuccessHandler(function(result) {
+          renderCheckInResult(result);
+          if (result.success || result.alreadyCheckedIn || result.blocked) {
+            loadDashboard();
+            setTimeout(function() { loadRegistrationDetails(currentRegId); }, 700);
+          }
+        })
+        .withFailureHandler(function(err) {
+          if (container) {
+            container.innerHTML = '<div class="status error" style="display:block">Error: ' + esc(err.message) + '</div>';
+          }
+        })
+        .processAttendeeCheckIn(currentRegId, attendeeId);
+    }
+
+    function handleGeneratePDF() {
+      var btn = document.getElementById('pdfBtn');
+      if (btn) { btn.innerHTML = '<span class="spinner"></span>'; btn.disabled = true; }
+      google.script.run
+        .withSuccessHandler(function(url) {
+          if (btn) { btn.innerHTML = 'Generate / View PDF'; btn.disabled = false; }
+          if (url) window.open(url, '_blank');
+          else setStatus('detailsStatus', 'error', 'No PDF URL was returned.');
+        })
+        .withFailureHandler(function(err) {
+          if (btn) { btn.innerHTML = 'Generate / View PDF'; btn.disabled = false; }
+          setStatus('detailsStatus', 'error', 'PDF error: ' + err.message);
+        })
+        .adminPanelGeneratePDF(currentRegId);
+    }
+
+    function handleOverrideTotal() {
+      var value = parseFloat(document.getElementById('overrideTotalInput').value);
+      if (isNaN(value)) return setStatus('detailsStatus', 'error', 'Enter a valid number.');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('detailsStatus', result.success ? 'success' : 'error', result.message);
+          if (result.success) setTimeout(function() { loadRegistrationDetails(currentRegId); }, 700);
+        })
+        .withFailureHandler(function(err) {
+          setStatus('detailsStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelUpdateEstimatedTotal(currentRegId, value);
+    }
+
+    function handleRevokeDiscount() {
+      showConfirm('Revoke Meal Discount?', 'Set meal count to 0 and recalculate the total?', 'revokeDiscount');
+    }
+
+    function doRevokeDiscount() {
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('detailsStatus', result.success ? 'success' : 'error', result.message);
+          if (result.success) setTimeout(function() { loadRegistrationDetails(currentRegId); }, 700);
+        })
+        .withFailureHandler(function(err) {
+          setStatus('detailsStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelRevokeMealDiscount(currentRegId);
+    }
+
+    function openQueuePanel() {
+      showPanel('assignments');
+      loadQueue();
+    }
+
+    function loadQueue() {
+      document.getElementById('queueList').innerHTML = '<div class="empty">Loading…</div>';
+      google.script.run
+        .withSuccessHandler(function(data) {
+          if (data.error) return setStatus('queueStatus', 'error', data.error);
+          renderQueue(data);
+        })
+        .withFailureHandler(function(err) {
+          setStatus('queueStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelGetAllAssignments();
+    }
+
+    function renderQueue(data) {
+      var total = data.totalClubs || 0;
+      var assigned = data.fullyAssignedCount || 0;
+      var review = (data.assignedCount || 0) - assigned;
+      document.getElementById('queueSummary').innerHTML =
+        '<div class="stats-grid">' +
+          statBox(total - (data.assignedCount || 0), 'Pending') +
+          statBox(review, 'Needs Review') +
+          statBox(assigned, 'Assigned') +
+          statBox(total, 'Total') +
+        '</div>';
+      var rows = data.clubs || [];
+      if (!rows.length) {
+        document.getElementById('queueList').innerHTML = '<div class="empty">No registrations in queue.</div>';
+        return;
+      }
+      var html = '<div class="roster-list">';
+      rows.forEach(function(item) {
+        var flags = (item.attentionFlags || []).map(function(flag) { return flag.label; }).join(', ');
+        html += '<div class="queue-item" onclick="loadRegistrationDetails(\'' + esc(item.registrationId) + '\')">' +
+          '<div class="result-label">' + esc(item.clubName) + statusPill(item.lodgingStatus) + '</div>' +
+          '<div class="result-sub">' + esc((item.lodgingPreference || '').replace(/_/g, ' ') + ' · Attendees: ' + item.totalAttendees) + '</div>' +
+          (flags ? '<div class="tiny">Flags: ' + esc(flags) + '</div>' : '') +
+          '</div>';
+      });
+      document.getElementById('queueList').innerHTML = html + '</div>';
+    }
+
+    function runSystemTool(functionName) {
+      setStatus('toolStatus', 'info', 'Running…');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          setStatus('toolStatus', result.success ? 'success' : 'error', result.message);
+          loadDashboard();
+        })
+        .withFailureHandler(function(err) {
+          setStatus('toolStatus', 'error', 'Error: ' + err.message);
+        })
+        [functionName]();
+    }
+
+    function statusPill(status) {
+      var normalized = String(status || '').toLowerCase();
+      if (normalized === 'assigned') return '<span class="pill pill-ok">Assigned</span>';
+      if (normalized === 'waitlist') return '<span class="pill pill-warn">Waitlist</span>';
+      if (normalized === 'manual_review') return '<span class="pill pill-danger">Manual Review</span>';
+      return '<span class="pill pill-info">' + esc(normalized || 'Pending') + '</span>';
+    }
+
+    function personPills(person) {
+      var out = '';
+      if (person.isGuardian) out += '<span class="badge badge-ok">Guardian</span>';
+      if (person.ageGroup === 'child') out += '<span class="badge badge-warn">Child</span>';
+      if (person.checkInStatus === 'arrived') out += '<span class="badge badge-ok">Arrived</span>';
+      if (person.lodgingStatus === 'waitlist') out += '<span class="badge badge-danger">Waitlist</span>';
+      if (person.lodgingStatus === 'manual_review') out += '<span class="badge badge-info">Review</span>';
+      return out;
+    }
+
+    function buildPersonMeta(person) {
+      return [
+        person.attendeeId,
+        person.ageGroup,
+        person.lodgingPreference,
+        person.lodgingStatus,
+        person.bunkType,
+        person.assignedLodgingArea,
+        person.guardianSummary
+      ].filter(Boolean).join(' · ');
+    }
+
+    function buildCheckInMeta(person) {
+      return [
+        person.attendeeId,
+        person.lodgingPreference ? person.lodgingPreference.replace(/_/g, ' ') : '',
+        person.lodgingStatus ? person.lodgingStatus.replace(/_/g, ' ') : '',
+        person.bunkType ? person.bunkType.replace(/_/g, ' ') : '',
+        person.assignedLodgingArea || '',
+        person.guardianSummary || ''
+      ].filter(Boolean).join(' · ');
+    }
+
+    function optionList(values, selected) {
+      return values.map(function(value) {
+        var label = String(value).replace(/_/g, ' ');
+        return '<option value="' + esc(value) + '"' + (String(selected || '') === String(value) ? ' selected' : '') + '>' + esc(label) + '</option>';
+      }).join('');
+    }
+
+    function showConfirm(title, body, action, arg) {
+      document.getElementById('confirmTitle').textContent = title;
+      document.getElementById('confirmBody').textContent = body;
+      pendingAction = action;
+      pendingArg = arg || null;
+      document.getElementById('confirmOverlay').classList.add('open');
+    }
+
+    function closeConfirm() {
+      document.getElementById('confirmOverlay').classList.remove('open');
+      pendingAction = null;
+      pendingArg = null;
+    }
+
+    function runConfirm() {
+      var action = pendingAction;
+      var arg = pendingArg;
+      closeConfirm();
+      if (action === 'removeAttendee') return doRemoveAttendee(arg);
+      if (action === 'deleteReg') return doDeleteReg();
+      if (action === 'resendEmail') return doResendEmail();
+      if (action === 'revokeDiscount') return doRevokeDiscount();
+    }
+
+    function statBox(value, label) {
+      return '<div class="stat-box"><div class="stat-value">' + esc(String(value)) + '</div><div class="stat-label">' + esc(label) + '</div></div>';
+    }
+
+    function setStatus(id, type, message) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.className = 'status ' + type;
+      el.textContent = message;
+    }
+
+    function clearStatus(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.className = 'status';
+      el.textContent = '';
+    }
+
+    function esc(value) {
+      if (value === null || value === undefined) return '';
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    loadDashboard();
+    onAgeGroupChange();
+  </script>
+</body>
+</html>

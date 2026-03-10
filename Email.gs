@@ -271,8 +271,9 @@ function buildConfirmationEmailHtml_(data) {
             '<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">Hello <strong>' + escapeHtml_(data.registrantName || 'Registrant') + '</strong>,</p>' +
             '<p style="margin:0 0 20px 0;font-size:15px;line-height:1.7;color:#394851;">' +
               'Thank you for registering for <strong>' + escapeHtml_(CONFIG.email.eventName) + '</strong>. ' +
-              'This confirmation summarizes the attendees on your registration and the current lodging status. ' +
-              '<span style="font-weight:700;">TODO:</span> Update this intro text if you want a different pastoral or ministry tone before launch.' +
+              'We are grateful you are joining us for a weekend of fellowship, worship, and brotherhood centered on the theme <em>Shields of Faith</em>. ' +
+              'This confirmation summarizes the attendees on your registration and your current lodging status. ' +
+              'If you have any questions please reach out to us at ' + escapeHtml_(CONFIG.email.contactEmail) + '.' +
             '</p>' +
 
             '<div style="background:#f8f4eb;border:1px solid #e6dfd2;border-radius:12px;padding:16px 18px;margin-bottom:20px;">' +

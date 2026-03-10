@@ -37,6 +37,24 @@ function getColumnMap_(sheet) {
 }
 
 /**
+ * Same as getColumnMap_ but strips all non-alphanumeric characters from header
+ * keys (e.g. 'registration_id' → 'registrationid'). Use this when reading sheets
+ * whose column-lookup code uses stripped keys (no underscores/spaces).
+ *
+ * @param  {Sheet} sheet — any Google Apps Script Sheet object
+ * @returns {Object}     map of strippedHeader → 0-based index
+ */
+function getStrippedColumnMap_(sheet) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const map = {};
+  headers.forEach((h, i) => {
+    const key = String(h).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (key) map[key] = i;
+  });
+  return map;
+}
+
+/**
  * Returns the 1-based column number for a named header in a sheet.
  * Use this when calling sheet.getRange(row, col, ...) and you want
  * to look up the column number by header name rather than hardcoding it.

@@ -64,6 +64,19 @@ function enqueueBackgroundJob_(job) {
       Logger.log('enqueueBackgroundJob_: Queue parse error, resetting: ' + e);
       queue = [];
     }
+
+    // Purge stale jobs older than 10 minutes — GAS triggers fire within ~1 min,
+    // so anything stuck longer is unprocessable and should not block new jobs.
+    const TEN_MINUTES = 10 * 60 * 1000;
+    queue = queue.filter(j => {
+      const age = Date.now() - new Date(j.enqueuedAt).getTime();
+      if (age > TEN_MINUTES) {
+        Logger.log('enqueueBackgroundJob_: purging stale job (age=' + Math.round(age / 1000) + 's): ' + JSON.stringify(j));
+        return false;
+      }
+      return true;
+    });
+
     job.enqueuedAt = new Date().toISOString();
     queue.push(job);
 

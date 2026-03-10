@@ -24,9 +24,9 @@ const CONFIG = {
     theme: 'Shields of Faith',
     themeReference: 'Ephesians 6:16',
     tagline: 'Shields of Faith · Ephesians 6:16',
-    dates: 'TODO: Set Man Camp 2026 dates',
+    dates: 'June 19–22, 2026',
     location: 'Camp Heritage',
-    contactName: 'TODO: Set Man Camp contact name',
+    contactName: 'Man Camp Coordinator',
     speakers: [
       'Lee Rochholz — Iowa Missouri Conference President',
       'Mike Fenton — Senior Pastor, Chapel Oaks Seventh-day Adventist Church'
@@ -47,15 +47,15 @@ const CONFIG = {
 
   email: {
     enabled: true,
-    fromName: 'TODO: Set sender display name',
-    fromEmail: 'TODO: Set sender email address',
-    replyTo: 'TODO: Set reply-to email address',
+    fromName: 'Man Camp 2026',
+    fromEmail: 'noreply@imsda.org',
+    replyTo: 'mancamp@imsda.org',
     subject: 'Man Camp 2026 Registration Received',
     eventName: 'Man Camp 2026',
-    eventDates: 'TODO: Set Man Camp 2026 dates',
+    eventDates: 'June 19–22, 2026',
     eventLocation: 'Camp Heritage',
-    contactEmail: 'TODO: Set contact email',
-    contactPhone: 'TODO: Set contact phone'
+    contactEmail: 'mancamp@imsda.org',
+    contactPhone: '(515) 278-8403'
   },
 
   pdf: {
@@ -142,7 +142,7 @@ const CONFIG = {
         key: 'rv_hookups',
         label: 'RV Camping - with hookups',
         inventoryType: 'rv_spot',
-        publicCapacity: 0,
+        publicCapacity: 0, // Intentional: Camp Heritage has no RV hookup sites for 2026
         countsAsUnlimited: false
       },
       tentNoHookups: {

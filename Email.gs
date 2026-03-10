@@ -210,7 +210,11 @@ function buildConfirmationEmailHtml_(data) {
   const sabbathEmailPrice = 70;
   const sabbathAttendees = people.filter(function(p) { return p.lodgingPreference === 'sabbath_attendance_only'; });
   const overnightAttendees = people.filter(function(p) { return p.lodgingPreference !== 'sabbath_attendance_only'; });
-  const estimatedTotal = estimatedTotalNum > 0 ? formatCurrency_(estimatedTotalNum) : '';
+  // Compute total from displayed line items so it always matches the rows above it,
+  // regardless of what per-person price may be stored in the sheet.
+  const lineItemTotal = (optionPriceNum > 0 && overnightAttendees.length > 0 ? optionPriceNum * overnightAttendees.length : 0) +
+    (sabbathAttendees.length > 0 ? sabbathEmailPrice * sabbathAttendees.length : 0);
+  const estimatedTotal = lineItemTotal > 0 ? formatCurrency_(lineItemTotal) : (estimatedTotalNum > 0 ? formatCurrency_(estimatedTotalNum) : '');
   const amountPaid = amountPaidNum > 0 ? formatCurrency_(amountPaidNum) : '';
   const needsAttention = waitlistCount > 0 || reviewCount > 0;
 

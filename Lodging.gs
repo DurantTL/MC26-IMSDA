@@ -322,6 +322,7 @@ function persistLodgingAssignments_(ss, registrationData) {
       is_guardian:               person.isGuardian ? 'Yes' : 'No',
       guardian_link_key:         person.guardianLinkKey || '',
       guardian_registration_id:  person.guardianRegistrationId || '',
+      own_link_key:              person.ownLinkKey || '',
       lodging_preference:        person.lodgingPreference || registrationData.lodgingPreference || '',
       lodging_option_key:        person.lodgingOptionKey || registrationData.lodgingOptionKey || '',
       lodging_option_label:      person.lodgingOptionLabel || registrationData.lodgingOptionLabel || '',
@@ -419,6 +420,7 @@ function updateRegistrationAndRosterLodgingFields_(ss, regSheet, rosterSheet, re
     assigned_lodging_area: assigned.assignedLodgingArea || '',
     notes: assigned.notes || '',
     roster_json: JSON.stringify(assigned.people || []),
+    attendees_json: JSON.stringify(assigned.people || []),
     registration_json: JSON.stringify({
       registration_id: assigned.registrationId,
       registration_label: assigned.registrationLabel,
@@ -529,12 +531,15 @@ function readPeopleForRegistrationFromRoster_(rosterSheet, registrationId) {
         guardianRelationship: String(row[colMap['guardian_relationship']] || ''),
         guardianRegistrationId: String(row[colMap['guardian_registration_id']] || ''),
         guardianLinkKey: String(row[colMap['guardian_link_key']] || ''),
+        ownLinkKey: String(row[colMap['own_link_key']] || ''),
         lodgingPreference: normalizeLodgingPreference_(row[colMap['lodging_preference']] || ''),
         lodgingOptionKey: String(row[colMap['lodging_option_key']] || ''),
         lodgingOptionLabel: String(row[colMap['lodging_option_label']] || ''),
         attendanceType: String(row[colMap['attendance_type']] || ''),
         programType: String(row[colMap['program_type']] || ''),
         shirtSize: String(row[colMap['shirt_size']] || '').toUpperCase(),
+        volunteer: String(row[colMap['volunteer']] || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
+        isVolunteer: String(row[colMap['volunteer']] || 'no').toLowerCase() === 'yes',
         priceSelected: row[colMap['price_selected']] || '',
         paymentStatus: String(row[colMap['payment_status']] || ''),
         paymentReference: String(row[colMap['payment_reference']] || ''),
@@ -563,7 +568,7 @@ function resolveGuardianLinkForChild_(ss, child, localAdults) {
   }
 
   if (child.guardianLinkKey) {
-    const localGuardian = localAdults.find(person => person.isGuardian && person.guardianLinkKey && person.guardianLinkKey === child.guardianLinkKey);
+    const localGuardian = localAdults.find(person => person.isGuardian && person.ownLinkKey && person.ownLinkKey === child.guardianLinkKey);
     if (localGuardian) {
       return { isLinked: true, guardian: localGuardian, reason: '' };
     }

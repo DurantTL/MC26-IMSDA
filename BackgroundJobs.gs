@@ -215,8 +215,6 @@ function processEmailJob_(ss, job) {
   const rowNum = findRegistrationRow_(regSheet, job.registrationId);
   if (rowNum < 0) throw new Error('Registration ID ' + job.registrationId + ' not found in sheet');
 
-  const r      = readRowAsObject_(regSheet, rowNum);
-  const roster = JSON.parse(r['roster_json'] || '[]');
   const data = buildConfirmationEmailDataFromRegistration_(ss, job.registrationId);
 
   try {

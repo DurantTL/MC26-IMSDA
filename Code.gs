@@ -311,7 +311,8 @@ function getRawHeaders_() {
   return [
     'timestamp','entry_id','club_name','director_name','email',
     'phone','roster_json','camping_json','processed','payload_json',
-    'primary_contact_name','primary_contact_email','party_json','lodging_json'
+    'primary_contact_name','primary_contact_email','party_json','lodging_json',
+    'attendees_json','pay_type','registration_total','processing_fee','custom_payment_amount'
   ];
 }
 
@@ -329,11 +330,13 @@ function getRegistrationsHeaders_() {
     // Phase 2 person-based model fields
     'first_name','last_name','email','phone','age','age_group','is_minor','is_guardian',
     'guardian_name','guardian_phone','guardian_email','guardian_relationship',
-    'guardian_registration_id','guardian_link_key','lodging_preference','lodging_option_key',
+    'guardian_registration_id','guardian_link_key','own_link_key','lodging_preference','lodging_option_key',
     'lodging_option_label','attendance_type','program_type','shirt_size','price_selected',
     'option_price','payment_status','payment_reference','payment_method','frontend_total',
     'square_total','amount_paid','medical_notes','special_considerations',
     'lodging_status','bunk_type','assigned_lodging_area','notes','created_at','registration_json',
+    'age_num','pay_type','rv_amp','rv_length','attendees_json','registration_total',
+    'processing_fee','custom_payment_amount','volunteer_count',
     // Phase 5 registration-level check-in rollup fields
     'check_in_status','check_in_timestamp'
   ];
@@ -348,10 +351,11 @@ function getRosterHeaders_() {
     // Phase 2 person-based model fields
     'first_name','last_name','email','phone','age','age_group','is_minor','is_guardian',
     'guardian_name','guardian_phone','guardian_email','guardian_relationship',
-    'guardian_registration_id','guardian_link_key','lodging_preference','lodging_option_key',
+    'guardian_registration_id','guardian_link_key','own_link_key','lodging_preference','lodging_option_key',
     'lodging_option_label','attendance_type','program_type','shirt_size','price_selected',
     'payment_status','payment_reference','medical_notes','special_considerations',
     'lodging_status','bunk_type','assigned_lodging_area','notes','created_at',
+    'pay_type','volunteer','registration_total','processing_fee','custom_payment_amount',
     // Phase 5 individual check-in fields
     'check_in_status','check_in_timestamp'
   ];
@@ -406,7 +410,7 @@ function getShirtInventoryHeaders_() {
 function getLodgingAssignmentsHeaders_() {
   return [
     'registration_id','attendee_id','full_name','age_group','is_guardian','guardian_link_key',
-    'guardian_registration_id','lodging_preference','lodging_option_key','lodging_option_label',
+    'guardian_registration_id','own_link_key','lodging_preference','lodging_option_key','lodging_option_label',
     'attendance_type','program_type','shirt_size','lodging_status','bunk_type',
     'assigned_lodging_area','inventory_category','consumes_public_inventory',
     'assignment_reason','created_at','updated_at',
@@ -866,7 +870,12 @@ function writeRawRow_(ss, data, rawJson) {
       ? data.primaryContact.email
       : (data.registrantEmail || data.email || ''),
     JSON.stringify(data.people || data.roster || []),
-    JSON.stringify(data.lodgingRequest || { lodging_preference: data.lodging_preference || '' })
+    JSON.stringify(data.lodgingRequest || { lodging_preference: data.lodging_preference || '' }),
+    data.attendeesJsonRaw || data.attendees_json || JSON.stringify(data.people || data.roster || []),
+    data.payType || data.pay_type || '',
+    data.registrationTotal !== undefined ? data.registrationTotal : (data.registration_total || ''),
+    data.processingFee !== undefined ? data.processingFee : (data.processing_fee || ''),
+    data.customPaymentAmount !== undefined ? data.customPaymentAmount : (data.custom_payment_amount || '')
   ]);
 }
 
@@ -882,8 +891,8 @@ function testConfirmationEmail() {
     registrantPhone:     '(515) 555-0100',
     registrationLabel:   'Smith Household',
     timestamp:           new Date(),
-    lodgingPreference:   'shared_cabin_detached',
-    lodgingOptionLabel:  'Shared Cabin - Detached restroom/shower, bring your own linens',
+    lodgingPreference:   'cabin_detached',
+    lodgingOptionLabel:  'Cabin - Detached restroom/shower',
     programType:         'young_mens',
     shirtSize:           'XL',
     paymentStatus:       'paid',
@@ -892,10 +901,10 @@ function testConfirmationEmail() {
     assignedLodgingArea: 'Cabin Area TBD',
     notes:               'TODO: Replace this sample note before showing stakeholders.',
     roster: [
-      { id: 'GUARD-001', name: 'James Smith', age: 41, ageGroup: 'adult', isGuardian: true, lodgingPreference: 'shared_cabin_detached', lodgingStatus: 'assigned', bunkType: 'bottom', assignedLodgingArea: 'Cabin A-3' },
+      { id: 'GUARD-001', name: 'James Smith', age: 41, ageGroup: 'adult', isGuardian: true, lodgingPreference: 'cabin_detached', lodgingStatus: 'assigned', bunkType: 'bottom', assignedLodgingArea: 'Cabin A-3' },
       { id: 'ADULT-002', name: 'Michael Reed', age: 38, ageGroup: 'adult', isGuardian: false, lodgingPreference: 'rv_hookups', lodgingStatus: 'waitlist', bunkType: 'none', assignmentReason: 'RV Camping - with hookups is currently full.' },
-      { id: 'CHILD-001', name: 'Ethan Smith', age: 12, ageGroup: 'child', isGuardian: false, guardianLinkKey: 'smith-family', lodgingPreference: 'shared_cabin_detached', lodgingStatus: 'assigned', bunkType: 'top_guardian_child', assignedLodgingArea: 'Cabin A-3' },
-      { id: 'CHILD-002', name: 'Noah Smith', age: 9, ageGroup: 'child', isGuardian: false, lodgingPreference: 'shared_cabin_detached', lodgingStatus: 'manual_review', bunkType: 'none', assignmentReason: 'Minor is missing complete guardian linkage and cannot be auto-assigned a cabin bunk.' }
+      { id: 'CHILD-001', name: 'Ethan Smith', age: 12, ageGroup: 'child', isGuardian: false, guardianLinkKey: 'smith-family', lodgingPreference: 'cabin_detached', lodgingStatus: 'assigned', bunkType: 'top_guardian_child', assignedLodgingArea: 'Cabin A-3' },
+      { id: 'CHILD-002', name: 'Noah Smith', age: 9, ageGroup: 'child', isGuardian: false, lodgingPreference: 'cabin_detached', lodgingStatus: 'manual_review', bunkType: 'none', assignmentReason: 'Minor is missing complete guardian linkage and cannot be auto-assigned a cabin bunk.' }
     ],
     costBreakdown: {
       estimatedTotal: 100,

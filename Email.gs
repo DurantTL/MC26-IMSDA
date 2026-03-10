@@ -18,16 +18,18 @@ function sendConfirmationEmail_(data) {
   const html = buildConfirmationEmailHtml_(emailData);
   const subjectTarget = emailData.registrationLabel || emailData.registrantName || 'Your Registration';
   const subject = CONFIG.email.subject + ' — ' + subjectTarget;
+  const options = {
+    htmlBody: html
+  };
+
+  if (CONFIG.email.fromName) options.name = CONFIG.email.fromName;
+  if (isValidEmailAddress_(CONFIG.email.replyTo)) options.replyTo = CONFIG.email.replyTo;
 
   GmailApp.sendEmail(
     emailData.registrantEmail,
     subject,
     'Please view this message in an HTML-capable email client.',
-    {
-      htmlBody: html,
-      name: CONFIG.email.fromName,
-      replyTo: CONFIG.email.replyTo
-    }
+    options
   );
 }
 
@@ -177,6 +179,12 @@ function normalizeEmailStatus_(value) {
 function normalizeEmailBunkType_(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return CONFIG.lodging.validation.validBunkTypes.includes(normalized) ? normalized : 'none';
+}
+
+function isValidEmailAddress_(value) {
+  const email = String(value || '').trim();
+  if (!email || email.indexOf('TODO:') === 0) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 

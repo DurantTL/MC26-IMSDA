@@ -80,7 +80,8 @@ function calculateRemainingShirtInventory_(ss, excludeRegistrationId) {
     if (!shirtSize || !remaining[shirtSize]) return;
 
     const status = String(row[colMap['lodging_status']] || '').trim().toLowerCase();
-    if (status !== 'assigned') return;
+    const ACTIVE_STATUSES = ['assigned', 'waitlisted', 'waitlist', 'manual_review'];
+    if (!ACTIVE_STATUSES.includes(status)) return;
 
     remaining[shirtSize].assigned++;
     remaining[shirtSize].remaining = Math.max(0, remaining[shirtSize].capacity - remaining[shirtSize].assigned);

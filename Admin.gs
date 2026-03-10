@@ -67,10 +67,8 @@ function adminPanelSearch(query) {
 
   const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
   if (regSheet && regSheet.getLastRow() > 1) {
-    const data    = regSheet.getDataRange().getValues();
-    const headers = data[0];
-    const col     = {};
-    headers.map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { col[h] = i; });
+    const data = regSheet.getDataRange().getValues();
+    const col  = getStrippedColumnMap_(regSheet);
 
     for (let r = 1; r < data.length; r++) {
       const row = data[r];
@@ -112,10 +110,8 @@ function adminPanelSearch(query) {
 
   const rosterSheet = ss.getSheetByName(CONFIG.sheets.roster);
   if (rosterSheet && rosterSheet.getLastRow() > 1) {
-    const data    = rosterSheet.getDataRange().getValues();
-    const headers = data[0];
-    const col     = {};
-    headers.map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { col[h] = i; });
+    const data = rosterSheet.getDataRange().getValues();
+    const col  = getStrippedColumnMap_(rosterSheet);
 
     for (let r = 1; r < data.length; r++) {
       const row = data[r];
@@ -525,8 +521,7 @@ function adminPanelResendEmail(registrationId) {
 
     // Find the registration row
     const regData = regSheet.getDataRange().getValues();
-    const col     = {};
-    regData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { col[h] = i; });
+    const col     = getStrippedColumnMap_(regSheet);
 
     let regRow = null;
     for (let r = 1; r < regData.length; r++) {
@@ -633,8 +628,7 @@ function adminPanelAddAttendee(registrationId, attendeeData) {
     if (!regSheet) return { success: false, message: 'Registrations sheet not found.' };
 
     const regData = regSheet.getDataRange().getValues();
-    const regCol  = {};
-    regData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { regCol[h] = i; });
+    const regCol  = getStrippedColumnMap_(regSheet);
 
     let regRow      = null;
     let regRowIndex = -1;
@@ -668,8 +662,7 @@ function adminPanelAddAttendee(registrationId, attendeeData) {
     let maxNum = 0;
     if (rosterSheet.getLastRow() > 1) {
       const rData = rosterSheet.getDataRange().getValues();
-      const rCol  = {};
-      rData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { rCol[h] = i; });
+      const rCol  = getStrippedColumnMap_(rosterSheet);
 
       for (let r = 1; r < rData.length; r++) {
         const aId = String(rData[r][rCol['attendeeid']] || '');
@@ -774,8 +767,7 @@ function adminPanelRemoveAttendee(registrationId, attendeeId) {
     }
 
     const rData = rosterSheet.getDataRange().getValues();
-    const rCol  = {};
-    rData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { rCol[h] = i; });
+    const rCol  = getStrippedColumnMap_(rosterSheet);
 
     let rowToDelete  = -1;
     let removedRole  = '';
@@ -803,8 +795,7 @@ function adminPanelRemoveAttendee(registrationId, attendeeId) {
     const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
     if (regSheet && regSheet.getLastRow() > 1) {
       const regData = regSheet.getDataRange().getValues();
-      const regCol  = {};
-      regData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { regCol[h] = i; });
+      const regCol  = getStrippedColumnMap_(regSheet);
 
       for (let r = 1; r < regData.length; r++) {
         if (String(regData[r][regCol['registrationid']] || '') !== registrationId) continue;
@@ -834,8 +825,7 @@ function adminPanelRemoveAttendee(registrationId, attendeeId) {
     // ── Rebuild roster_json, recalculate estimated_total, and refresh lodging ─────
     // Re-read regSheet data after headcount changes so regRow values are fresh
     const regData2 = regSheet.getDataRange().getValues();
-    const regCol2  = {};
-    regData2[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { regCol2[h] = i; });
+    const regCol2  = getStrippedColumnMap_(regSheet);
     let regRow2 = null, regRowIndex2 = -1;
     for (let r = 1; r < regData2.length; r++) {
       if (String(regData2[r][regCol2['registrationid']] || '') === registrationId) {
@@ -885,8 +875,7 @@ function syncRosterSnapshotAndTotal_(ss, rosterSheet, regSheet, registrationId, 
   try {
     // Re-read all current roster rows for this registration
     const rData = rosterSheet.getDataRange().getValues();
-    const rCol  = {};
-    rData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { rCol[h] = i; });
+    const rCol  = getStrippedColumnMap_(rosterSheet);
 
     const rosterSnapshot = [];
     for (let r = 1; r < rData.length; r++) {
@@ -1003,8 +992,7 @@ function adminPanelGetAllAssignments() {
     }
 
     const rData = regSheet.getDataRange().getValues();
-    const rCol = {};
-    rData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { rCol[h] = i; });
+    const rCol  = getStrippedColumnMap_(regSheet);
 
     const clubs = [];
     let assignedCount = 0, fullyAssignedCount = 0;
@@ -1079,8 +1067,7 @@ function adminPanelSetAssignment(registrationId, assignments) {
     if (!sheet) return { success: false, message: 'Assignments sheet not found.' };
 
     const data = sheet.getDataRange().getValues();
-    const col  = {};
-    data[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { col[h] = i; });
+    const col  = getStrippedColumnMap_(sheet);
 
     let rowNum = -1;
     for (let r = 1; r < data.length; r++) {
@@ -1173,9 +1160,8 @@ function adminFindDuplicates() {
     const sheet = ss.getSheetByName(CONFIG.sheets.registrations);
     if (!sheet || sheet.getLastRow() < 3) return { success: true, message: 'Not enough data to check.' };
 
-    const colMap  = {};
-    const data    = sheet.getDataRange().getValues();
-    data[0].forEach((h, i) => { colMap[String(h).trim().toLowerCase().replace(/[^a-z0-9]/g, '')] = i; });
+    const data   = sheet.getDataRange().getValues();
+    const colMap = getStrippedColumnMap_(sheet);
 
     const entryIds = {};
     let dupesCount = 0;

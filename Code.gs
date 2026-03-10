@@ -27,6 +27,17 @@ function doPost(e) {
 
     Logger.log('doPost received action: ' + data.action);
 
+    // Shared-secret check — set WEBHOOK_SECRET in Script Properties to enable.
+    // The WordPress plugin must send the same value in the webhookSecret field.
+    // If the property is absent the check is skipped (backwards-compatible).
+    const expectedSecret = PropertiesService.getScriptProperties().getProperty('WEBHOOK_SECRET');
+    if (expectedSecret && data.webhookSecret !== expectedSecret) {
+      Logger.log('doPost: unauthorized request — secret mismatch');
+      return ContentService
+        .createTextOutput(JSON.stringify({ success: false, error: 'Unauthorized' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     if (data.action === 'submitRegistration') {
       // Write full payload to RAW sheet immediately for audit trail + resync capability.
       // This is non-fatal — a write failure must not block the registration.
@@ -653,6 +664,7 @@ function adminAddPersonToGroup() {
   const ageResp = ui.prompt('Add Person', 'Age:', ui.ButtonSet.OK_CANCEL);
   if (ageResp.getSelectedButton() !== ui.Button.OK) return;
   const age = parseInt(ageResp.getResponseText().trim(), 10);
+  if (isNaN(age)) { ui.alert('Invalid age — please enter a whole number.'); return; }
 
   const ss    = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(CONFIG.sheets.roster);
@@ -718,8 +730,7 @@ function adminRemovePersonFromRoster() {
   const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
   if (regSheet && regSheet.getLastRow() > 1 && removedRole) {
     const regData = regSheet.getDataRange().getValues();
-    const regCol  = {};
-    regData[0].map(h => String(h).toLowerCase().replace(/[^a-z0-9]/g, '')).forEach((h, i) => { regCol[h] = i; });
+    const regCol  = getStrippedColumnMap_(regSheet);
     for (let r = 1; r < regData.length; r++) {
       if (String(regData[r][regCol['registrationid']] || '') !== regId) continue;
       const rowNum = r + 1;
@@ -806,8 +817,13 @@ function resyncFromRawSheet() {
     );
     if (confirm2 !== SpreadsheetApp.getUi().Button.YES) return;
 
-    const party   = JSON.parse(r['party_json']   || r['roster_json']  || '[]');
-    const lodging = JSON.parse(r['lodging_json'] || r['camping_json'] || '{}');
+    let party = [];
+    try { party = JSON.parse(r['party_json'] || r['roster_json'] || '[]'); }
+    catch (e) { Logger.log('resyncFromRawSheet: bad party JSON — ' + e); }
+
+    let lodging = {};
+    try { lodging = JSON.parse(r['lodging_json'] || r['camping_json'] || '{}'); }
+    catch (e) { Logger.log('resyncFromRawSheet: bad lodging JSON — ' + e); }
     data = {
       fluentFormEntryId: entryId,
       first_name:        String(r['primary_contact_name'] || r['director_name'] || '').split(' ')[0] || '',

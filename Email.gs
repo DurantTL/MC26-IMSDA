@@ -201,12 +201,17 @@ function buildConfirmationEmailHtml_(data) {
   const guardianCount = people.filter(function(person) { return person.isGuardian; }).length;
   const childCount = people.filter(function(person) { return person.ageGroup === 'child'; }).length;
   const createdAt = data.timestamp ? formatEmailDateTime_(data.timestamp) : 'Pending';
-  const estimatedTotal = typeof data.costBreakdown.estimatedTotal === 'number' && !isNaN(data.costBreakdown.estimatedTotal)
-    ? formatCurrency_(data.costBreakdown.estimatedTotal)
-    : '';
-  const amountPaid = typeof data.costBreakdown.amountPaid === 'number' && !isNaN(data.costBreakdown.amountPaid)
-    ? formatCurrency_(data.costBreakdown.amountPaid)
-    : '';
+  const estimatedTotalNum = typeof data.costBreakdown.estimatedTotal === 'number' && data.costBreakdown.estimatedTotal > 0
+    ? data.costBreakdown.estimatedTotal : 0;
+  const amountPaidNum = typeof data.costBreakdown.amountPaid === 'number' && data.costBreakdown.amountPaid > 0
+    ? data.costBreakdown.amountPaid : 0;
+  const optionPriceNum = typeof data.costBreakdown.optionPrice === 'number' && data.costBreakdown.optionPrice > 0
+    ? data.costBreakdown.optionPrice : 0;
+  const sabbathEmailPrice = 70;
+  const sabbathAttendees = people.filter(function(p) { return p.lodgingPreference === 'sabbath_attendance_only'; });
+  const overnightAttendees = people.filter(function(p) { return p.lodgingPreference !== 'sabbath_attendance_only'; });
+  const estimatedTotal = estimatedTotalNum > 0 ? formatCurrency_(estimatedTotalNum) : '';
+  const amountPaid = amountPaidNum > 0 ? formatCurrency_(amountPaidNum) : '';
   const needsAttention = waitlistCount > 0 || reviewCount > 0;
 
   const peopleRows = people.map(function(person) {
@@ -345,9 +350,22 @@ function buildConfirmationEmailHtml_(data) {
 
             ((estimatedTotal || amountPaid)
               ? '<div style="background:#faf7ef;border:1px solid #e6dfd2;border-radius:10px;padding:12px 14px;margin-bottom:20px;font-size:14px;">' +
-                  (estimatedTotal ? '<strong>Selected / Charged Total:</strong> ' + escapeHtml_(estimatedTotal) : '') +
-                  (amountPaid ? '<div style="margin-top:6px;"><strong>Amount Paid:</strong> ' + escapeHtml_(amountPaid) + '</div>' : '') +
-                  '<div style="margin-top:6px;color:#6b7280;font-size:12px;">This email preserves the selected option and payment reference for Square reconciliation.</div>' +
+                  '<div style="font-weight:700;font-size:15px;margin-bottom:8px;">Registration Cost Summary</div>' +
+                  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">' +
+                  (optionPriceNum > 0 && overnightAttendees.length > 0
+                    ? '<tr><td style="color:#53636b;padding:3px 0;">Overnight (' + overnightAttendees.length + ' person' + (overnightAttendees.length !== 1 ? 's' : '') + ' \u00d7 ' + escapeHtml_(formatCurrency_(optionPriceNum)) + ')</td><td style="text-align:right;padding:3px 0;font-weight:600;">' + escapeHtml_(formatCurrency_(optionPriceNum * overnightAttendees.length)) + '</td></tr>'
+                    : '') +
+                  (sabbathAttendees.length > 0
+                    ? '<tr><td style="color:#53636b;padding:3px 0;">Sabbath-only (' + sabbathAttendees.length + ' person' + (sabbathAttendees.length !== 1 ? 's' : '') + ' \u00d7 ' + escapeHtml_(formatCurrency_(sabbathEmailPrice)) + ')</td><td style="text-align:right;padding:3px 0;font-weight:600;">' + escapeHtml_(formatCurrency_(sabbathEmailPrice * sabbathAttendees.length)) + '</td></tr>'
+                    : '') +
+                  (estimatedTotal
+                    ? '<tr><td style="border-top:1px solid #e6dfd2;padding:6px 0 2px;font-weight:700;">Registration Total</td><td style="border-top:1px solid #e6dfd2;padding:6px 0 2px;text-align:right;font-weight:700;">' + escapeHtml_(estimatedTotal) + '</td></tr>'
+                    : '') +
+                  (amountPaid && amountPaid !== estimatedTotal
+                    ? '<tr><td style="color:#53636b;padding:3px 0;">Amount Paid (incl. processing fee)</td><td style="text-align:right;padding:3px 0;">' + escapeHtml_(amountPaid) + '</td></tr>'
+                    : '') +
+                  '</table>' +
+                  '<div style="margin-top:6px;color:#6b7280;font-size:12px;">Payment reference retained for Square reconciliation.</div>' +
                 '</div>'
               : '') +
 

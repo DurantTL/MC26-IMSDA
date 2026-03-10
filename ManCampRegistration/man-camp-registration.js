@@ -50,6 +50,7 @@
   const SQUARE_FEE_RATE = 0.029;
   const SQUARE_FEE_FIXED = 0.30;
   const SABBATH_ONLY_PRICE = 70;
+  const LODGING_LOW_THRESHOLD = 10;
   const RETRY_LIMIT = 40;
   const RETRY_DELAY_MS = 250;
 
@@ -258,6 +259,7 @@
       gasUrl,
       offlineValues,
       shirtInventory: null,
+      lodgingAvailability: null,
       primaryExtras: {
         attendance_type: 'overnight',
         program: PROGRAMS.standard.key,
@@ -518,6 +520,21 @@
       return { people, totals, lodging };
     }
 
+    function getLodgingAvailabilityInfo(optionKey) {
+      if (!state.lodgingAvailability) return null;
+      const info = state.lodgingAvailability[optionKey];
+      if (!info) return null;
+      if (info.soldOut && info.waitlistAllowed) return { text: 'Full — waitlist only', color: '#b45309', soldOut: false };
+      if (info.soldOut) return { text: 'Sold out', color: '#b91c1c', soldOut: true };
+      if (typeof info.available === 'number' && info.available <= LODGING_LOW_THRESHOLD) {
+        return { text: `Only ${info.available} spot${info.available === 1 ? '' : 's'} left`, color: '#b45309', soldOut: false };
+      }
+      if (typeof info.available === 'number') {
+        return { text: `${info.available} spots available`, color: '#166534', soldOut: false };
+      }
+      return null;
+    }
+
     function render() {
       const rawPeople = allPeopleRaw();
       const adultsForDraft = adultsForGuardians(rawPeople, null);
@@ -547,6 +564,19 @@
       const showPrimaryGuardian = primaryAge !== null && primaryAge < 18;
       const showDraftGuardian = draftAge !== null && draftAge < 18;
       const lodgingOption = optionByKey(state.lodging.type);
+
+      // Compute availability warning for the currently selected lodging option.
+      const selectedLodgingAvail = state.lodgingAvailability && state.lodgingAvailability[state.lodging.type];
+      let availabilityWarning = '';
+      if (selectedLodgingAvail) {
+        if (selectedLodgingAvail.soldOut && !selectedLodgingAvail.waitlistAllowed) {
+          availabilityWarning = `${lodgingOption.label} is sold out. Please select a different option.`;
+        } else if (selectedLodgingAvail.soldOut && selectedLodgingAvail.waitlistAllowed) {
+          availabilityWarning = `${lodgingOption.label} is full — your registration will be placed on the waitlist.`;
+        } else if (typeof selectedLodgingAvail.available === 'number' && selectedLodgingAvail.available <= LODGING_LOW_THRESHOLD) {
+          availabilityWarning = `Only ${selectedLodgingAvail.available} spot${selectedLodgingAvail.available === 1 ? '' : 's'} remaining for ${lodgingOption.label}.`;
+        }
+      }
 
       container.innerHTML = `
         <div class="mc-builder">
@@ -641,15 +671,20 @@
             <div class="mc-card">
               <h3>Lodging</h3>
               <div class="mc-lodging-options">
-                ${LODGING_OPTIONS.map((option) => `
-                  <label class="mc-option">
-                    <input type="radio" name="mc-lodging-option" value="${escapeHtml(option.key)}"${state.lodging.type === option.key ? ' checked' : ''}>
+                ${LODGING_OPTIONS.map((option) => {
+                  const availInfo = getLodgingAvailabilityInfo(option.key);
+                  const isSoldOut = availInfo && availInfo.soldOut;
+                  return `
+                  <label class="mc-option"${isSoldOut ? ' style="opacity:0.55;"' : ''}>
+                    <input type="radio" name="mc-lodging-option" value="${escapeHtml(option.key)}"${state.lodging.type === option.key ? ' checked' : ''}${isSoldOut ? ' disabled' : ''}>
                     <span>
                       <strong>${escapeHtml(option.label)}</strong>
                       <span>$${formatMoney(option.price)} per overnight attendee</span>
+                      ${availInfo ? `<span style="display:block;margin-top:3px;font-size:12px;font-weight:600;color:${escapeHtml(availInfo.color)};">${escapeHtml(availInfo.text)}</span>` : ''}
                     </span>
                   </label>
-                `).join('')}
+                `;
+                }).join('')}
               </div>
               ${state.lodging.type === 'rv_hookups' ? `
                 <div class="mc-grid two" style="margin-top:14px;">
@@ -803,7 +838,7 @@
               <div class="muted" style="margin-top:6px;">Processing fee: $${formatMoney(totals.processingFee)} (${state.paymentMethod === 'offline' ? 'offline payment' : 'Square'})</div>
               <div style="margin-top:10px; font-size: 20px; font-weight: 700;">Total due: $${formatMoney(totals.customPaymentAmount)}</div>
               <div class="muted" style="margin-top:6px;">Lodging option: ${escapeHtml(lodgingOption.label)}</div>
-              ${state.availabilityWarning ? `<div class="mc-inline-warning" style="margin-top:8px;color:#ffd8a8;">${escapeHtml(state.availabilityWarning)}</div>` : ''}
+              ${availabilityWarning ? `<div class="mc-inline-warning" style="margin-top:8px;color:#ffd8a8;">${escapeHtml(availabilityWarning)}</div>` : ''}
             </div>
           </div>
         </div>
@@ -949,12 +984,19 @@
         if (!response.ok) throw new Error(`Availability request failed with ${response.status}`);
         const data = await response.json();
         state.shirtInventory = data && data.shirts ? data.shirts : null;
-        state.availabilityWarning = '';
+        if (data && Array.isArray(data.options)) {
+          state.lodgingAvailability = {};
+          data.options.forEach(function(opt) {
+            state.lodgingAvailability[opt.optionKey] = opt;
+          });
+        } else {
+          state.lodgingAvailability = null;
+        }
         render();
       } catch (error) {
         state.shirtInventory = null;
-        state.availabilityWarning = '';
-        window.console.warn('Man Camp shirt availability fetch failed; leaving all sizes enabled.', error);
+        state.lodgingAvailability = null;
+        window.console.warn('Man Camp availability fetch failed; leaving all options enabled.', error);
         render();
       }
     }

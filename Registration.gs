@@ -163,27 +163,45 @@ function processRegistration(data) {
 function calculateCost_(registrationData) {
   const option = getRegistrationOptionByKey_(registrationData.lodgingOptionKey || registrationData.lodgingPreference || '');
   const configuredPrice = option ? Number(option.price) || 0 : 0;
+  const sabbathOnlyPrice = Number((CONFIG.registrationOptions.sabbath_attendance_only || {}).price) || 70;
+
+  // Mirror the frontend calculateTotals() logic: sum per-person prices from the roster.
+  // This is the authoritative total when form-submitted amounts are zero or absent.
+  const roster = registrationData.roster || registrationData.people || [];
+  let rosterTotal = 0;
+  roster.forEach(function(person) {
+    if (String(person.volunteer || '').toLowerCase() === 'yes') return;
+    const att = String(person.attendanceType || person.attendance_type || '').toLowerCase();
+    rosterTotal += (att === 'sabbath_only' || att === 'sabbath_attendance_only')
+      ? sabbathOnlyPrice : configuredPrice;
+  });
+  const computedTotal = rosterTotal > 0 ? rosterTotal : configuredPrice;
+
   const selectedPrice = registrationData.priceSelected !== '' && registrationData.priceSelected !== undefined
-    ? Number(registrationData.priceSelected) || 0
+    ? Number(registrationData.priceSelected) || configuredPrice
     : configuredPrice;
-  const squareTotal = registrationData.squareTotal !== '' && registrationData.squareTotal !== undefined
-    ? Number(registrationData.squareTotal) || 0
-    : '';
-  const frontendTotal = registrationData.frontendTotal !== '' && registrationData.frontendTotal !== undefined
-    ? Number(registrationData.frontendTotal) || 0
-    : '';
-  const amountPaid = registrationData.amountPaid !== '' && registrationData.amountPaid !== undefined
-    ? Number(registrationData.amountPaid) || 0
-    : (squareTotal !== '' ? squareTotal : (frontendTotal !== '' ? frontendTotal : selectedPrice));
+
+  // Treat 0 as absent — a $0 submission value means the field was not populated.
+  const squareTotal   = Number(registrationData.squareTotal)   || 0;
+  const frontendTotal = Number(registrationData.frontendTotal) || 0;
+  const amountPaidRaw = Number(registrationData.amountPaid)    || 0;
+
+  // estimatedTotal: base registration charge (pre-processing-fee), computed from the roster.
+  // frontendTotal is the JS-submitted multi-person subtotal; prefer it if present.
+  const estimatedTotal = frontendTotal > 0 ? frontendTotal : computedTotal;
+
+  // amountPaid: what Square actually charged (includes processing fee). 0 for offline/unpaid.
+  const amountPaid = amountPaidRaw > 0 ? amountPaidRaw
+    : (squareTotal > 0 ? squareTotal : 0);
 
   return {
     configuredPrice: configuredPrice,
-    selectedPrice: selectedPrice,
-    frontendTotal: frontendTotal,
-    squareTotal: squareTotal,
-    amountPaid: amountPaid,
-    estimatedTotal: amountPaid || selectedPrice,
-    paymentStatus: String(registrationData.paymentStatus || '').trim().toLowerCase() || 'pending'
+    selectedPrice:   selectedPrice,
+    frontendTotal:   frontendTotal > 0 ? frontendTotal : computedTotal,
+    squareTotal:     squareTotal > 0 ? squareTotal : '',
+    amountPaid:      amountPaid,
+    estimatedTotal:  estimatedTotal,
+    paymentStatus:   String(registrationData.paymentStatus || '').trim().toLowerCase() || 'pending'
   };
 }
 
@@ -485,7 +503,13 @@ function normalizeRegistrationSubmission_(data) {
     paymentStatus:     normalizePaymentStatus_(data.payment_status || data.paymentStatus || ''),
     paymentReference:  String(data.payment_reference || data.transaction_id || data.transactionId || data.order_id || '').trim(),
     paymentMethod:     String(data.payment_method || data.paymentMethod || CONFIG.payments.defaultMethod).trim(),
-    frontendTotal:     data.frontend_total !== undefined && data.frontend_total !== '' ? Number(data.frontend_total) || 0 : '',
+    frontendTotal:     data.frontend_total !== undefined && data.frontend_total !== ''
+      ? Number(data.frontend_total) || 0
+      : (data.registrationTotal !== undefined && data.registrationTotal !== ''
+        ? Number(data.registrationTotal) || 0
+        : (data.registration_total !== undefined && data.registration_total !== ''
+          ? Number(data.registration_total) || 0
+          : '')),
     squareTotal:       data.square_total !== undefined && data.square_total !== '' ? Number(data.square_total) || 0 : '',
     amountPaid:        data.amount_paid !== undefined && data.amount_paid !== '' ? Number(data.amount_paid) || 0 : '',
     medicalNotes:      String(data.medical_notes || data.medical || '').trim(),

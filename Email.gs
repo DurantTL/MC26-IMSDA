@@ -446,11 +446,15 @@ function buildEmailStatCell_(label, value, bg) {
 
 function labelForPreference_(value) {
   const labels = {
-    cabin_detached: 'Cabin - Detached restroom/shower',
-    cabin_connected: 'Cabin - Connected restroom',
-    rv_hookups: 'RV Camping - with hookups',
-    tent_no_hookups: 'Tent Camping - no hookups',
-    sabbath_only: 'Sabbath Only'
+    shared_cabin_connected:  'Shared Cabin - Connected restroom, linens provided',
+    shared_cabin_detached:   'Shared Cabin - Detached restroom/shower, bring your own linens',
+    rv_hookups:              'RV Camping - with hookups',
+    tent_no_hookups:         'Tent Camping - no hookups',
+    sabbath_attendance_only: 'Sabbath Attendance only',
+    // legacy short-form keys (kept for backwards-compat with old data)
+    cabin_connected:         'Shared Cabin - Connected restroom, linens provided',
+    cabin_detached:          'Shared Cabin - Detached restroom/shower, bring your own linens',
+    sabbath_only:            'Sabbath Attendance only'
   };
   return labels[String(value || '').trim().toLowerCase()] || '';
 }

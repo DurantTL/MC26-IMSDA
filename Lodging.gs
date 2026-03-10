@@ -26,11 +26,11 @@ function seedLodgingInventorySheet_(sheet) {
 
     if (existingMap.has(def.key)) {
       const rowNum = existingMap.get(def.key);
+      // Do not overwrite public_capacity for existing rows — admins may have edited it directly.
       updateRowFromObject_(sheet, rowNum, {
         lodging_category: rowObj.lodging_category,
         label: rowObj.label,
         inventory_type: rowObj.inventory_type,
-        public_capacity: rowObj.public_capacity,
         is_unlimited: rowObj.is_unlimited
       });
     } else {
@@ -263,7 +263,7 @@ function calculateRemainingInventory(ss, excludeRegistrationId) {
   const byCategory = {};
   definitions.forEach(def => {
     byCategory[def.key] = {
-      definition: def,
+      definition: Object.assign({}, def),
       assignedPublicUnits: 0,
       assignedTopBunks: 0,
       waitlistCount: 0,
@@ -271,6 +271,27 @@ function calculateRemainingInventory(ss, excludeRegistrationId) {
       remainingPublicCapacity: def.isUnlimited ? 'Unlimited' : def.publicCapacity
     };
   });
+
+  // Override publicCapacity from the LodgingInventory sheet so admins can
+  // adjust spot counts there without editing code. Config.gs values are the
+  // initial seed only; the sheet is the authoritative source once seeded.
+  const inventorySheet = ss.getSheetByName(CONFIG.sheets.lodgingInventory);
+  if (inventorySheet && inventorySheet.getLastRow() > 1) {
+    const invRows = inventorySheet.getRange(2, 1, inventorySheet.getLastRow() - 1, inventorySheet.getLastColumn()).getValues();
+    const invColMap = getColumnMap_(inventorySheet);
+    invRows.forEach(function(row) {
+      const cat = String(row[invColMap['lodging_category']] || '').trim();
+      const capRaw = row[invColMap['public_capacity']];
+      const isUnlimited = String(row[invColMap['is_unlimited']] || '').trim().toLowerCase() === 'yes';
+      if (cat && byCategory[cat] && !isUnlimited && capRaw !== '' && capRaw !== null) {
+        const cap = Number(capRaw);
+        if (!isNaN(cap)) {
+          byCategory[cat].definition.publicCapacity = cap;
+          byCategory[cat].remainingPublicCapacity = cap;
+        }
+      }
+    });
+  }
 
   const sheet = ss.getSheetByName(CONFIG.sheets.lodgingAssignments);
   if (!sheet || sheet.getLastRow() < 2) {

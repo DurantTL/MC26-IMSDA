@@ -131,34 +131,62 @@
   }
 
   function findPaymentMethodControl(form) {
-    return form.querySelector('[data-payment-method], input[name="payment_method"], select[name="payment_method"]');
+    // Prefer visible/interactive controls (radio, select) over hidden fields.
+    // The widget writes state back to a hidden input[name="payment_method"],
+    // so if we matched that first we'd always read our own output instead of
+    // the user's actual Fluent Forms payment selection.
+    return (
+      form.querySelector('input[type="radio"][name="pay_type"], input[type="radio"][name="payment_method"]') ||
+      form.querySelector('select[name="pay_type"], select[name="payment_method"]') ||
+      form.querySelector('[data-payment-method]') ||
+      form.querySelector('input[name="pay_type"], input[name="payment_method"]')
+    );
   }
 
   function resolvePaymentMethod(form, offlineValues) {
+    // Strategy 1: scan every checked radio in the form for an offline value.
+    // This works regardless of what Fluent Forms names the payment field.
+    const allCheckedRadios = Array.from(form.querySelectorAll('input[type="radio"]:checked'));
+    for (const radio of allCheckedRadios) {
+      // Skip radios that belong to the widget's own internal lodging selector
+      if (radio.name === 'mc-lodging-option') continue;
+      const v = String(radio.value || '').trim().toLowerCase();
+      if (offlineValues.includes(v)) {
+        return { raw: v, normalized: 'offline' };
+      }
+    }
+
+    // Strategy 2: scan every select in the form for an offline value.
+    const allSelects = Array.from(form.querySelectorAll('select'));
+    for (const select of allSelects) {
+      // Skip selects inside the widget container
+      if (select.closest('#' + CONTRACT.containerId)) continue;
+      const v = String(select.value || '').trim().toLowerCase();
+      if (offlineValues.includes(v)) {
+        return { raw: v, normalized: 'offline' };
+      }
+    }
+
+    // Strategy 3: fall back to named field lookup
     const paymentMethodField = findPaymentMethodControl(form);
-    if (!paymentMethodField) {
-      return { raw: '', normalized: 'square' };
+    if (paymentMethodField) {
+      let rawValue = '';
+      if (paymentMethodField.matches('select')) {
+        rawValue = paymentMethodField.value;
+      } else if (paymentMethodField.matches('input[type="radio"]')) {
+        const fieldName = paymentMethodField.name || 'payment_method';
+        const checked = form.querySelector(`input[name="${fieldName}"]:checked`);
+        rawValue = checked ? checked.value : '';
+      } else {
+        rawValue = paymentMethodField.value || paymentMethodField.getAttribute('data-payment-method') || '';
+      }
+      const normalizedRaw = String(rawValue || '').trim().toLowerCase();
+      if (offlineValues.includes(normalizedRaw)) {
+        return { raw: normalizedRaw, normalized: 'offline' };
+      }
     }
 
-    let rawValue = '';
-    if (paymentMethodField.matches('select')) {
-      rawValue = paymentMethodField.value;
-    } else if (paymentMethodField.matches('input[type="radio"][name="payment_method"]')) {
-      const checked = form.querySelector('input[name="payment_method"]:checked');
-      rawValue = checked ? checked.value : '';
-    } else if (paymentMethodField.matches('input[type="hidden"], input[type="text"], input:not([type])')) {
-      rawValue = paymentMethodField.value;
-    } else {
-      const checked = paymentMethodField.querySelector ? paymentMethodField.querySelector('input[name="payment_method"]:checked') : null;
-      rawValue = checked ? checked.value : (paymentMethodField.value || paymentMethodField.getAttribute('data-payment-method') || '');
-    }
-
-    const normalizedRaw = String(rawValue || '').trim().toLowerCase();
-    const normalized = normalizedRaw === 'square' || normalizedRaw === '' || !offlineValues.includes(normalizedRaw)
-      ? 'square'
-      : 'offline';
-
-    return { raw: normalizedRaw, normalized };
+    return { raw: '', normalized: 'square' };
   }
 
   function createPersonBase(person, index, allPeople) {
@@ -241,8 +269,17 @@
   }
 
   function initWidget(container, form) {
-    const offlineValues = parseOfflineValues(container.getAttribute('data-offline-values'));
-    const gasUrl = container.getAttribute('data-gas-url') || settings.gasUrl || '';
+    // Read offline values from wp_localize_script settings first (secure server-side),
+    // then fall back to data-offline-values attribute for manual overrides.
+    const offlineValues = parseOfflineValues(
+      (settings.offlineValues && Array.isArray(settings.offlineValues)
+        ? settings.offlineValues.join(',')
+        : null) ||
+      container.getAttribute('data-offline-values')
+    );
+    // gasUrl comes from wp_localize_script (never exposed in HTML markup).
+    // data-gas-url attribute is kept as a local dev override only.
+    const gasUrl = settings.gasUrl || container.getAttribute('data-gas-url') || '';
     const primaryFields = {
       first_name: getField(form, 'first_name'),
       last_name: getField(form, 'last_name'),
@@ -441,7 +478,7 @@
       });
 
       const roundedBase = roundCurrency(baseTotal);
-      const processingFee = paymentMethod === 'square'
+      const processingFee = paymentMethod === 'square' && roundedBase > 0
         ? roundCurrency((roundedBase * SQUARE_FEE_RATE) + SQUARE_FEE_FIXED)
         : 0;
       const customPaymentAmount = roundCurrency(roundedBase + processingFee);
@@ -501,8 +538,34 @@
       setFieldValue(form, CONTRACT.rvLengthField, state.lodging.type === 'rv_hookups' ? (state.lodging.rvLengthFeet || '') : '');
       setFieldValue(form, CONTRACT.registrationTotalField, formatMoney(totals.baseTotal));
       setFieldValue(form, CONTRACT.processingFeeField, formatMoney(totals.processingFee));
-      setFieldValue(form, CONTRACT.paymentMethodField, state.paymentMethod);
-      setFieldValue(form, CONTRACT.payTypeField, state.paymentMethod);
+      // Write resolved payment method to a hidden output field only.
+      // We must NOT write to CONTRACT.paymentMethodField if it resolves to a
+      // radio group — doing so re-checks 'square' on every render and prevents
+      // the user from ever selecting cash/check.
+      // Instead: find the actual hidden input (not a radio) and write there.
+      // If no dedicated hidden field exists, create one so the payload always
+      // carries the resolved value.
+      (function writePaymentMethodOutput() {
+        const allFields = Array.from(form.querySelectorAll('[name="payment_method"]'));
+        const hiddenField = allFields.find((el) => el.type === 'hidden' || el.tagName === 'INPUT' && el.type !== 'radio');
+        if (hiddenField) {
+          if (hiddenField.value !== state.paymentMethod) {
+            hiddenField.value = state.paymentMethod;
+            hiddenField.dispatchEvent(new Event('input', { bubbles: true }));
+            hiddenField.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        } else {
+          // Create a dedicated hidden output field so the payload always has it
+          let outField = form.querySelector('input[name="mc_payment_method_out"]');
+          if (!outField) {
+            outField = document.createElement('input');
+            outField.type = 'hidden';
+            outField.name = 'mc_payment_method_out';
+            form.appendChild(outField);
+          }
+          outField.value = state.paymentMethod;
+        }
+      }());
       CONTRACT.customPaymentAmountFields.forEach((name) => {
         setFieldValue(form, name, formatMoney(totals.customPaymentAmount));
       });
@@ -514,6 +577,18 @@
       noTranslateField(getField(form, CONTRACT.registrationTotalField));
       noTranslateField(getField(form, CONTRACT.processingFeeField));
       CONTRACT.customPaymentAmountFields.forEach((name) => noTranslateField(getField(form, name)));
+
+      // Sync primary registrant values back to native Fluent Forms fields
+      // so FF's own required-field validation passes. These calls are no-ops
+      // if the fields don't exist in the form.
+      const primaryPerson = readPrimaryPerson();
+      const primaryAge = parseAge(primaryPerson.age);
+      const primaryAgeGroup = ageGroupFor(primaryAge);
+      setFieldValue(form, 'shirt_size', state.primaryExtras.shirt);
+      setFieldValue(form, 'program_type', state.primaryExtras.program);
+      setFieldValue(form, 'attendance_type', state.primaryExtras.attendance_type);
+      setFieldValue(form, 'age_group', primaryAgeGroup);
+      setFieldValue(form, 'is_minor', primaryAgeGroup === 'child' ? 'yes' : 'no');
 
       return { people, totals, lodging };
     }
@@ -558,12 +633,13 @@
             #${CONTRACT.containerId} h3 { margin: 0 0 12px; font-size: 18px; }
             #${CONTRACT.containerId} .mc-field { display: flex; flex-direction: column; gap: 6px; }
             #${CONTRACT.containerId} label { font-size: 13px; font-weight: 600; color: #29465b; }
-            #${CONTRACT.containerId} input, #${CONTRACT.containerId} select, #${CONTRACT.containerId} textarea { width: 100%; border: 1px solid #c6d2dc; border-radius: 10px; padding: 10px 12px; font: inherit; box-sizing: border-box; background: #fff; }
+            #${CONTRACT.containerId} input:not([type="radio"]):not([type="checkbox"]), #${CONTRACT.containerId} select, #${CONTRACT.containerId} textarea { width: 100%; border: 1px solid #c6d2dc; border-radius: 10px; padding: 10px 12px; font: inherit; box-sizing: border-box; background: #fff; }
             #${CONTRACT.containerId} .mc-inline-error { color: #b42318; font-size: 12px; min-height: 16px; }
             #${CONTRACT.containerId} .mc-inline-warning { color: #9a6700; font-size: 12px; min-height: 16px; }
             #${CONTRACT.containerId} .mc-lodging-options { display: grid; gap: 10px; }
-            #${CONTRACT.containerId} .mc-option { border: 1px solid #d7e2ec; border-radius: 12px; padding: 12px; display: flex; gap: 10px; align-items: flex-start; }
+            #${CONTRACT.containerId} .mc-option { border: 1px solid #d7e2ec; border-radius: 12px; padding: 12px; display: flex; gap: 10px; align-items: center; cursor: pointer; }
             #${CONTRACT.containerId} .mc-option strong { display: block; }
+            #${CONTRACT.containerId} .mc-option input[type="radio"] { width: auto; flex-shrink: 0; margin: 0; accent-color: #145da0; }
             #${CONTRACT.containerId} .mc-summary { background: #12344d; color: #fff; border-radius: 14px; padding: 16px; }
             #${CONTRACT.containerId} .mc-summary .muted { color: #c8d7e3; }
             #${CONTRACT.containerId} table { width: 100%; border-collapse: collapse; }
@@ -799,7 +875,12 @@
             <div class="mc-summary">
               <h3 style="color:#fff;">Summary</h3>
               <div>${people.length} attendee${people.length === 1 ? '' : 's'}</div>
-              <div class="muted" style="margin-top:6px;">${totals.overnightCount} overnight @ $${formatMoney(totals.overnightPrice)} + ${totals.sabbathOnlyCount} sabbath-only @ $${formatMoney(SABBATH_ONLY_PRICE)} = $${formatMoney(totals.baseTotal)}</div>
+              <div class="muted" style="margin-top:6px;">
+                ${totals.overnightCount > 0 ? `${totals.overnightCount} overnight @ $${ formatMoney(totals.overnightPrice)}` : ''}
+                ${totals.overnightCount > 0 && totals.sabbathOnlyCount > 0 ? ' + ' : ''}
+                ${totals.sabbathOnlyCount > 0 ? `${totals.sabbathOnlyCount} sabbath-only @ $${formatMoney(SABBATH_ONLY_PRICE)}` : ''}
+                ${(totals.overnightCount > 0 || totals.sabbathOnlyCount > 0) ? ` = $${formatMoney(totals.baseTotal)}` : '$0.00'}
+              </div>
               <div class="muted" style="margin-top:6px;">Processing fee: $${formatMoney(totals.processingFee)} (${state.paymentMethod === 'offline' ? 'offline payment' : 'Square'})</div>
               <div style="margin-top:10px; font-size: 20px; font-weight: 700;">Total due: $${formatMoney(totals.customPaymentAmount)}</div>
               <div class="muted" style="margin-top:6px;">Lodging option: ${escapeHtml(lodgingOption.label)}</div>
@@ -937,6 +1018,18 @@
         const field = key.replace('lodging.', '');
         state.lodging[field] = value;
       }
+
+      // For free-text and number inputs, skip re-rendering on every keystroke.
+      // Re-rendering destroys and recreates the input element, causing focus
+      // loss after each character typed. State is updated above; re-render
+      // fires on 'change' (blur) which is bound on the same element below.
+      const isTextLike = target.tagName === 'INPUT' &&
+        (target.type === 'text' || target.type === 'number' || target.type === '' || !target.type);
+      if (event.type === 'input' && isTextLike) {
+        syncHiddenFields();
+        return;
+      }
+
       render();
     }
 
@@ -996,16 +1089,28 @@
       });
     });
 
-    const paymentControl = findPaymentMethodControl(form);
-    if (paymentControl) {
-      form.addEventListener('change', (event) => {
-        const target = event.target;
-        if (!target) return;
-        if (target.name === 'payment_method' || target.closest('[data-payment-method]')) {
-          render();
-        }
-      });
-    }
+    // Listen for ANY radio or select change outside the widget container.
+    // We can't rely on knowing Fluent Forms' exact field name for the payment
+    // method selector, so we re-resolve on any change that could affect it.
+    form.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!target) return;
+      // Always re-render on payment-named fields
+      if (
+        target.name === 'payment_method' ||
+        target.name === 'pay_type' ||
+        target.closest('[data-payment-method]')
+      ) {
+        render();
+        return;
+      }
+      // Also re-render on any radio or select outside the widget — covers
+      // whatever name Fluent Forms actually uses for the payment selector
+      const isOutsideWidget = !target.closest('#' + CONTRACT.containerId);
+      if (isOutsideWidget && (target.type === 'radio' || target.tagName === 'SELECT')) {
+        render();
+      }
+    });
 
     form.addEventListener('submit', handleFormSubmit, true);
 
@@ -1035,6 +1140,23 @@
   function setFieldValue(form, name, value) {
     const field = getField(form, name);
     if (!field) return false;
+
+    // Radio group: find and check the radio whose value matches.
+    if (field.matches('input[type="radio"]')) {
+      const radios = Array.from(form.querySelectorAll(`input[type="radio"][name="${name}"]`));
+      let matched = false;
+      radios.forEach((radio) => {
+        const shouldCheck = radio.value === value;
+        if (shouldCheck && !radio.checked) {
+          radio.checked = true;
+          radio.dispatchEvent(new Event('input', { bubbles: true }));
+          radio.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (shouldCheck) matched = true;
+      });
+      return matched;
+    }
+
     if (field.value === value) return true;
     field.value = value;
     field.dispatchEvent(new Event('input', { bubbles: true }));

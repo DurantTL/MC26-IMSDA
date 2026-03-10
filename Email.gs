@@ -108,6 +108,8 @@ function normalizeConfirmationEmailData_(data) {
     const bunkType = normalizeEmailBunkType_(person.bunkType || person.bunk_type || defaultBunkTypeForPreference_(lodgingPreference, lodgingStatus));
     const guardianLinkKey = String(person.guardianLinkKey || person.guardian_link_key || '').trim();
     const guardianRegistrationId = String(person.guardianRegistrationId || person.guardian_registration_id || '').trim();
+    // own_link_key: identifies THIS person as the guardian target for children referencing them.
+    const ownLinkKey = String(person.ownLinkKey || person.own_link_key || '').trim();
 
     return {
       id: String(person.id || person.attendeeId || person.attendee_id || 'ATT-' + String(index + 1).padStart(3, '0')),
@@ -119,6 +121,7 @@ function normalizeConfirmationEmailData_(data) {
       isGuardian: isGuardian,
       guardianLinkKey: guardianLinkKey,
       guardianRegistrationId: guardianRegistrationId,
+      ownLinkKey: ownLinkKey,
       lodgingPreference: lodgingPreference,
       lodgingStatus: lodgingStatus,
       bunkType: bunkType,
@@ -384,8 +387,10 @@ function buildGuardianRelationshipLine_(person, people) {
   if (person.isGuardian) return '<div style="margin-top:4px;font-size:11px;color:#44606c;">Guardian</div>';
   if (person.ageGroup !== 'child') return '';
   if (person.guardianLinkKey) {
+    // A guardian's own guardianLinkKey is always empty (they have no guardian) -
+    // comparing against it would never resolve. ownLinkKey is the correct target.
     const guardian = people.find(function(candidate) {
-      return candidate.isGuardian && candidate.guardianLinkKey && candidate.guardianLinkKey === person.guardianLinkKey;
+      return candidate.isGuardian && candidate.ownLinkKey && candidate.ownLinkKey === person.guardianLinkKey;
     });
     if (guardian) {
       return '<div style="margin-top:4px;font-size:11px;color:#44606c;">Linked to guardian: ' + escapeHtml_(guardian.name) + '</div>';
@@ -432,11 +437,11 @@ function buildEmailStatCell_(label, value, bg) {
 
 function labelForPreference_(value) {
   const labels = {
-    shared_cabin_detached: 'Shared Cabin - Detached restroom/shower, bring your own linens',
-    shared_cabin_connected: 'Shared Cabin - Connected restroom, linens provided',
+    cabin_detached: 'Cabin - Detached restroom/shower',
+    cabin_connected: 'Cabin - Connected restroom',
     rv_hookups: 'RV Camping - with hookups',
     tent_no_hookups: 'Tent Camping - no hookups',
-    sabbath_attendance_only: 'Sabbath Attendance only'
+    sabbath_only: 'Sabbath Only'
   };
   return labels[String(value || '').trim().toLowerCase()] || '';
 }

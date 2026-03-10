@@ -323,6 +323,7 @@ function writeRosterRows_(ss, data) {
       guardian_relationship:   person.guardianRelationship || '',
       guardian_registration_id: person.guardianRegistrationId || '',
       guardian_link_key:       person.guardianLinkKey || '',
+      own_link_key:            person.ownLinkKey || '',
       lodging_preference:      person.lodgingPreference || data.lodgingPreference || '',
       lodging_option_key:      person.lodgingOptionKey || data.lodgingOptionKey || '',
       lodging_option_label:    person.lodgingOptionLabel || data.lodgingOptionLabel || '',
@@ -584,11 +585,17 @@ function normalizePersonRecord_(person, index, context) {
   const age = person.age !== undefined && person.age !== null && person.age !== '' ? Number(person.age) : '';
   const ageGroup = normalizeAgeGroup_(person);
   const isMinor = age !== '' ? age < CONFIG.ageRules.adultMinAge : ageGroup === 'child';
-  const isGuardian = toBoolean_(person.is_guardian !== undefined ? person.is_guardian : person.isGuardian)
-    || (index === 0 && ageGroup === 'adult');
-
   const guardianRegistrationId = String(person.guardian_registration_id || person.guardianRegistrationId || '').trim();
   const guardianLinkKey = String(person.guardian_link_key || person.guardianLinkKey || '').trim();
+  // own_link_key: the key set ON this person that their children reference via guardian_link_key.
+  // Sent explicitly from the JS widget so GAS never recomputes it from name+index.
+  const ownLinkKey = String(person.own_link_key || person.ownLinkKey || '').trim();
+  // is_guardian is set explicitly by the JS widget based on whether any child's
+  // guardianIndex points to this person. ownLinkKey being non-empty on an adult
+  // is a secondary confirmation. The old "index === 0" fallback is removed - it
+  // incorrectly marked every first adult as a guardian even with no children present.
+  const isGuardian = toBoolean_(person.is_guardian !== undefined ? person.is_guardian : person.isGuardian)
+    || (ageGroup === 'adult' && !!ownLinkKey);
   const lodgingPreference = normalizeLodgingPreference_(person.lodging_preference || person.lodgingPreference || context.lodgingPreference);
   const rawStatus = String(person.lodging_status || person.lodgingStatus || (ageGroup === 'child' && !isGuardian && !guardianRegistrationId && !guardianLinkKey ? 'manual_review' : 'pending')).trim().toLowerCase();
   const lodgingStatus = CONFIG.lodging.validation.validStatuses.includes(rawStatus) ? rawStatus : 'manual_review';
@@ -617,6 +624,7 @@ function normalizePersonRecord_(person, index, context) {
     guardianRelationship:     String(person.guardian_relationship || person.guardianRelationship || context.guardianRelationship || '').trim(),
     guardianRegistrationId:   guardianRegistrationId,
     guardianLinkKey:          guardianLinkKey,
+    ownLinkKey:               ownLinkKey,
     lodgingPreference:        lodgingPreference,
     lodgingOptionKey:         String(person.lodging_option_key || person.lodgingOptionKey || context.lodgingOptionKey || lodgingPreference).trim(),
     lodgingOptionLabel:       String(person.lodging_option_label || person.lodgingOptionLabel || context.lodgingOptionLabel || '').trim(),

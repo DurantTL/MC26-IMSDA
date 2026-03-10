@@ -23,17 +23,26 @@ define( 'MANCAMP_OPTION_GROUP', 'mancamp_settings' );
 define( 'MANCAMP_HTTP_TIMEOUT', 30 );
 define( 'MANCAMP_EVENT_KEY', 'man-camp-2026' );
 define( 'MANCAMP_FAILED_WEBHOOKS_OPTION', 'mancamp_failed_webhooks' );
+define( 'MANCAMP_SENT_ENTRY_IDS_OPTION', 'mancamp_sent_entry_ids' );
+define( 'MANCAMP_WEBHOOK_LOG_OPTION', 'mancamp_webhook_log' );
 define( 'MANCAMP_RETRY_HOOK', 'mancamp_retry_webhooks' );
+define( 'MANCAMP_OFFLINE_SWEEP_HOOK', 'mancamp_offline_sweep' );
+define( 'MANCAMP_OFFLINE_SWEEP_STATUS_OPTION', 'mancamp_offline_sweep_status' );
 
 function mancamp_get_setting( $key, $default = '' ) {
     $options = get_option( MANCAMP_OPTION_GROUP, [] );
     return isset( $options[ $key ] ) ? $options[ $key ] : $default;
 }
 
-function mancamp_gas_url()   { return mancamp_get_setting( 'gas_url',    '' ); }
-function mancamp_form_id()   { return (int) mancamp_get_setting( 'form_id',   0 ); }
-function mancamp_page_slug() { return mancamp_get_setting( 'page_slug',  'man-camp-registration' ); }
-function mancamp_debug()     { return (bool) mancamp_get_setting( 'debug_mode', false ); }
+function mancamp_gas_url()       { return mancamp_get_setting( 'gas_url',       '' ); }
+function mancamp_form_id()       { return (int) mancamp_get_setting( 'form_id',      0 ); }
+function mancamp_page_slug()     { return mancamp_get_setting( 'page_slug',     'man-camp-registration' ); }
+function mancamp_debug()         { return (bool) mancamp_get_setting( 'debug_mode',  false ); }
+function mancamp_offline_values() {
+    $raw = mancamp_get_setting( 'offline_values', '' );
+    if ( empty( $raw ) ) return [ 'offline', 'check', 'cash' ];
+    return array_values( array_filter( array_map( 'trim', explode( ',', strtolower( $raw ) ) ) ) );
+}
 
 
 // ============================================================
@@ -46,26 +55,26 @@ const MANCAMP_FIELD_MAP = [
     'email'                   => 'email',
     'phone'                   => 'phone',
     'age'                     => 'age',
-    'ageNum'                  => 'age',
-    'pay_type'                => 'pay_type',
+    'age_group'               => 'age_group',
+    'is_minor'                => 'is_minor',
+    'is_guardian'             => 'is_guardian',
+    'program_type'            => 'program_type',
+    'shirt_size'              => 'shirt_size',
     'lodging_option_key'      => 'lodging_option_key',
     'lodging_option_label'    => 'lodging_option_label',
     'lodging_request_json'    => 'lodging_request_json',
+    'attendance_type'         => 'attendance_type',
     'rv_amp'                  => 'rv_amp',
     'rv_length'               => 'rv_length',
     'people_json'             => 'people_json',
-    'attendees_json'          => 'people_json',
+    'attendees_json'          => 'attendees_json',
     'roster_json'             => 'roster_json',
     'attendee_count'          => 'attendee_count',
     'registration_total'      => 'registration_total',
     'processing_fee'          => 'processing_fee',
-    'custom_payment_amount'   => 'custom_payment_amount',
-    'payment_status'          => 'payment_status',
-    'payment_reference'       => 'payment_reference',
     'payment_method'          => 'payment_method',
-    'square_total'            => 'square_total',
-    'amount_paid'             => 'amount_paid',
     'notes'                   => 'notes',
+    'medical_notes'           => 'medical_notes',
 ];
 
 const MANCAMP_BOOLEAN_FIELDS = [
@@ -117,9 +126,16 @@ function mancamp_register_hooks() {
     add_action( 'admin_post_mancamp_save_settings',  'mancamp_save_settings' );
     add_action( 'admin_post_mancamp_retry',          'mancamp_handle_retry' );
     add_action( 'admin_post_mancamp_manual_resync',  'mancamp_handle_manual_resync' );
-    add_action( 'fluentform_submission_inserted',     'mancamp_handle_submission', 20, 3 );
+    add_action( 'admin_post_mancamp_run_offline_sweep', 'mancamp_handle_run_offline_sweep' );
+    add_action( 'fluentform_payment_paid', 'mancamp_handle_payment_event', 20, 10 );
+    add_action( 'fluentform_payment_status_to_paid', 'mancamp_handle_payment_event', 20, 10 );
+    add_action( 'fluentform_payment_status_updated', 'mancamp_maybe_send_offline', 10, 3 );
+    add_action( 'fluentform_submission_inserted', 'mancamp_maybe_send_offline_on_submit', 10, 3 );
     add_action( MANCAMP_RETRY_HOOK, 'mancamp_retry_failed_webhooks' );
+    add_action( MANCAMP_OFFLINE_SWEEP_HOOK, 'mancamp_sweep_offline_submissions' );
     add_filter( 'cron_schedules', 'mancamp_add_cron_schedule' );
+    mancamp_schedule_retry_event();
+    mancamp_schedule_offline_sweep_event();
 }
 
 
@@ -142,7 +158,8 @@ function mancamp_enqueue_scripts() {
     );
 
     wp_localize_script( 'man-camp-registration', 'manCampRegistrationSettings', [
-        'gasUrl' => mancamp_gas_url(),
+        'gasUrl'        => mancamp_gas_url(),
+        'offlineValues' => mancamp_offline_values(),
         'fieldContract' => [
             'containerId' => 'mancamp-builder',
             'peopleField' => 'people_json',
@@ -166,8 +183,12 @@ function mancamp_is_registration_page() {
     $slug = mancamp_page_slug();
     if ( empty( $slug ) ) return false;
     if ( is_page( $slug ) ) return true;
-    $current = trim( parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ), '/' );
-    return ( $current === $slug || substr( $current, -strlen( $slug ) ) === $slug );
+    $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
+    $current = trim( (string) wp_parse_url( $request_uri, PHP_URL_PATH ), '/' );
+    if ( $current === '' ) return false;
+
+    $segments = array_values( array_filter( explode( '/', $current ) ) );
+    return ! empty( $segments ) && end( $segments ) === $slug;
 }
 
 
@@ -210,45 +231,148 @@ function mancamp_add_notranslate_meta() {
 
 
 // ============================================================
-// SECTION 6 — SUBMISSION HANDLER
+// SECTION 6 — PAYMENT WEBHOOK PIPELINE
 // ============================================================
 
-function mancamp_handle_submission( $insertId, $formData, $form ) {
-    if ( (int) $form->id !== mancamp_form_id() ) return;
-
-    mancamp_log( 'Submission received. FF entry ID: ' . $insertId );
-
-    $payload = mancamp_build_payload( $formData, $insertId );
-
-    if ( is_wp_error( $payload ) ) {
-        mancamp_log( 'Payload build error: ' . $payload->get_error_message(), 'error' );
+function mancamp_handle_payment_event( ...$args ) {
+    $context = mancamp_resolve_payment_hook_context( $args );
+    if ( is_wp_error( $context ) ) {
+        mancamp_log_event( 0, 'failed', 'Payment hook context error: ' . $context->get_error_message() );
         return;
     }
 
-    update_option( 'mancamp_pending_' . $insertId, $payload, false );
+    $entry_id = (int) $context['entry_id'];
+    $form_id = (int) $context['form_id'];
 
+    if ( $form_id !== mancamp_form_id() ) {
+        return;
+    }
+
+    mancamp_process_entry_webhook( $entry_id, [
+        'submission' => $context['submission'],
+        'payment'    => $context['payment'],
+    ], false, 'paid_hook', 'Paid hook attempting webhook delivery.' );
+}
+
+function mancamp_maybe_send_offline( $newStatus, $entryId, $submission ) {
+    $entry_id = (int) $entryId;
+    if ( $entry_id <= 0 || mancamp_has_sent_entry_id( $entry_id ) ) {
+        if ( $entry_id > 0 && mancamp_has_sent_entry_id( $entry_id ) ) {
+            mancamp_log_event( $entry_id, 'duplicate', 'Skipping offline status hook because this entry_id was already sent.' );
+        }
+        return;
+    }
+
+    $status = strtolower( sanitize_text_field( (string) $newStatus ) );
+    if ( ! in_array( $status, [ 'pending', 'processing', 'paid', 'completed', 'partially-paid' ], true ) ) {
+        return;
+    }
+
+    $submission_record = mancamp_normalise_submission_argument( $submission, $entry_id );
+    if ( is_wp_error( $submission_record ) ) {
+        mancamp_log_event( $entry_id, 'failed', 'Offline status hook could not load submission: ' . $submission_record->get_error_message() );
+        return;
+    }
+
+    if ( (int) ( $submission_record['form_id'] ?? 0 ) !== mancamp_form_id() ) {
+        return;
+    }
+
+    $payment = mancamp_get_payment_record( $entry_id );
+    if ( ! mancamp_is_offline_submission( $submission_record, $payment ) ) {
+        return;
+    }
+
+    mancamp_process_entry_webhook( $entry_id, [
+        'submission' => $submission_record,
+        'payment'    => $payment,
+    ], false, 'offline_status_hook', 'Offline status hook attempting webhook delivery.' );
+}
+
+function mancamp_maybe_send_offline_on_submit( $insertId, $formData, $form ) {
+    $entry_id = (int) $insertId;
+    if ( $entry_id <= 0 ) {
+        return;
+    }
+
+    if ( mancamp_has_sent_entry_id( $entry_id ) ) {
+        mancamp_log_event( $entry_id, 'duplicate', 'Skipping offline submission hook because this entry_id was already sent.' );
+        return;
+    }
+
+    if ( (int) ( $form->id ?? 0 ) !== mancamp_form_id() ) {
+        return;
+    }
+
+    $submission = [
+        'id'         => $entry_id,
+        'form_id'    => (int) ( $form->id ?? 0 ),
+        'response'   => is_array( $formData ) ? $formData : [],
+        'created_at' => current_time( 'mysql' ),
+    ];
+
+    if ( ! mancamp_is_offline_submission( $submission ) ) {
+        return;
+    }
+
+    sleep( 3 );
+
+    mancamp_process_entry_webhook( $entry_id, [
+        'submission' => $submission,
+        'payment'    => mancamp_get_payment_record( $entry_id ),
+    ], false, 'offline_submission_hook', 'Offline submission hook attempting webhook delivery.' );
+}
+
+function mancamp_process_entry_webhook( $entry_id, $context = [], $is_retry = false, $attempt_status = 'attempting', $attempt_message = '' ) {
+    $entry_id = (int) $entry_id;
+    if ( $entry_id <= 0 ) {
+        return new WP_Error( 'missing_entry_id', 'Missing Fluent Forms entry ID.' );
+    }
+
+    mancamp_prune_sent_entry_ids();
+
+    if ( mancamp_has_sent_entry_id( $entry_id ) ) {
+        mancamp_log_event( $entry_id, 'duplicate', 'Skipping webhook because this entry_id was already sent.' );
+        return [ 'duplicate' => true ];
+    }
+
+    $submission = ! empty( $context['submission'] ) ? $context['submission'] : mancamp_get_submission_record( $entry_id );
+    if ( is_wp_error( $submission ) ) {
+        mancamp_log_event( $entry_id, 'failed', 'Submission lookup failed: ' . $submission->get_error_message() );
+        return $submission;
+    }
+
+    if ( (int) ( $submission['form_id'] ?? 0 ) !== mancamp_form_id() ) {
+        return new WP_Error( 'wrong_form', 'Submission does not belong to the configured Fluent Form.' );
+    }
+
+    $payment = ! empty( $context['payment'] ) ? $context['payment'] : mancamp_get_payment_record( $entry_id );
+    $payload = mancamp_build_payload( $submission, $payment );
+
+    if ( is_wp_error( $payload ) ) {
+        mancamp_log_event( $entry_id, 'failed', 'Payload build error: ' . $payload->get_error_message() );
+        return $payload;
+    }
+
+    $log_status = $is_retry ? 'retry' : $attempt_status;
+    $log_message = $is_retry
+        ? 'Retrying webhook POST to GAS.'
+        : ( $attempt_message !== '' ? $attempt_message : 'Attempting webhook POST to GAS.' );
+
+    mancamp_log_event( $entry_id, $log_status, $log_message );
     $result = mancamp_post_to_gas( $payload );
 
     if ( is_wp_error( $result ) ) {
-        mancamp_log( 'GAS POST error: ' . $result->get_error_message(), 'error' );
-        mancamp_store_failed_payload( $insertId, $payload, $result->get_error_message() );
-        return;
+        mancamp_store_failed_payload( $entry_id, $payload, $result->get_error_message(), $is_retry );
+        mancamp_log_event( $entry_id, 'failed', 'Webhook POST failed: ' . $result->get_error_message() );
+        return $result;
     }
 
-    delete_option( 'mancamp_pending_' . $insertId );
-    mancamp_remove_failed_payload( $insertId );
-    mancamp_log( 'GAS response: ' . wp_json_encode( $result ) );
+    mancamp_mark_entry_sent( $entry_id );
+    mancamp_remove_failed_payload( $entry_id );
+    mancamp_log_event( $entry_id, 'success', 'Webhook delivered to GAS successfully.' );
 
-    if ( ! empty( $result['registrationId'] ) ) {
-        $log   = get_option( 'mancamp_id_log', [] );
-        $log[] = [
-            'ff_entry_id'     => $insertId,
-            'registration_id' => $result['registrationId'],
-            'timestamp'       => current_time( 'mysql' ),
-        ];
-        if ( count( $log ) > 500 ) $log = array_slice( $log, -500 );
-        update_option( 'mancamp_id_log', $log, false );
-    }
+    return $result;
 }
 
 
@@ -256,29 +380,27 @@ function mancamp_handle_submission( $insertId, $formData, $form ) {
 // SECTION 7 — PAYLOAD BUILDER
 // ============================================================
 
-function mancamp_build_payload( $formData, $insertId ) {
-    $top_level = [];
+function mancamp_build_payload( $submission, $payment = [] ) {
+    $form_data = is_array( $submission['response'] ?? null ) ? $submission['response'] : [];
+    $top_level = mancamp_extract_top_level_fields( $form_data );
+    $entry_id = (int) ( $submission['id'] ?? 0 );
 
-    foreach ( MANCAMP_FIELD_MAP as $ff_key => $gas_key ) {
-        if ( ! isset( $formData[ $ff_key ] ) ) continue;
-        $top_level[ $gas_key ] = mancamp_sanitise_top_level_field( $ff_key, $formData[ $ff_key ] );
-    }
-
-    $people = mancamp_extract_people_payload( $formData );
+    $people = mancamp_extract_people_payload( $form_data );
     if ( is_wp_error( $people ) ) {
         return $people;
     }
 
     $primary = $people[0];
-    $lodging_request = mancamp_extract_lodging_request( $formData, $primary );
-    $payment = mancamp_collect_payment_meta( $formData, $top_level );
-    $people_json = wp_json_encode( $people );
-    $submitted_at = current_time( 'c' );
+    $lodging_request = mancamp_extract_lodging_request( $form_data, $primary );
+    $payment_meta = mancamp_collect_payment_meta( $form_data, $payment, $top_level );
+    $attendee_count = mancamp_resolve_attendee_count( $top_level, $people );
+    $submitted_at = mancamp_submission_timestamp( $submission );
+    mancamp_warn_for_missing_fields( $entry_id, $top_level );
 
     return [
         'action'            => 'submitRegistration',
         'eventKey'          => MANCAMP_EVENT_KEY,
-        'fluentFormEntryId' => (string) $insertId,
+        'fluentFormEntryId' => (string) $entry_id,
         'submittedAt'       => $submitted_at,
         'primaryContact'    => [
             'name'  => trim( $primary['first_name'] . ' ' . $primary['last_name'] ),
@@ -287,38 +409,39 @@ function mancamp_build_payload( $formData, $insertId ) {
         ],
         'lodgingRequest'    => $lodging_request,
         'people'            => $people,
-        'attendeeCount'     => count( $people ),
-        'payment'           => $payment,
-
-        // Legacy aliases retained for the existing GAS normalization paths.
-        'first_name'            => $primary['first_name'],
-        'last_name'             => $primary['last_name'],
-        'email'                 => $primary['email'],
-        'phone'                 => $primary['phone'],
-        'age'                   => $primary['age'],
-        'ageNum'                => $primary['age'],
-        'lodging_option_key'    => $lodging_request['type'],
-        'lodging_option_label'  => mancamp_lodging_label( $lodging_request['type'] ),
-        'lodging_request_json'  => wp_json_encode( $lodging_request ),
-        'rv_amp'                => $lodging_request['rvAmp'] === null ? '' : $lodging_request['rvAmp'],
-        'rv_length'             => $lodging_request['rvLengthFeet'] === null ? '' : $lodging_request['rvLengthFeet'],
-        'people_json'           => $people_json,
-        'attendees_json'        => $people_json,
-        'roster_json'           => $people_json,
-        'attendee_count'        => count( $people ),
-        'registration_total'    => $payment['registrationTotal'],
-        'processing_fee'        => $payment['processingFee'],
-        'custom_payment_amount' => $payment['amountPaid'],
-        'payment_method'        => $payment['method'],
-        'pay_type'              => $payment['method'],
-        'payment_status'        => $payment['status'],
-        'payment_reference'     => $payment['reference'],
-        'amount_paid'           => $payment['amountPaid'],
-        'square_total'          => $payment['amountPaid'],
-        'attendees'             => $people,
-        'roster'                => $people,
-        'notes'                 => sanitize_textarea_field( $top_level['notes'] ?? '' ),
+        'attendeeCount'     => $attendee_count,
+        'payment'           => $payment_meta,
     ];
+}
+
+function mancamp_extract_top_level_fields( $form_data ) {
+    $top_level = [];
+
+    foreach ( MANCAMP_FIELD_MAP as $ff_key => $gas_key ) {
+        if ( ! isset( $form_data[ $ff_key ] ) ) {
+            continue;
+        }
+
+        $top_level[ $gas_key ] = mancamp_sanitise_top_level_field( $ff_key, $form_data[ $ff_key ] );
+    }
+
+    if ( ! isset( $top_level['payment_method'] ) ) {
+        $top_level['payment_method'] = mancamp_normalise_pay_type( mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], 'square' ) );
+    }
+
+    if ( ! isset( $top_level['people_json'] ) ) {
+        $top_level['people_json'] = mancamp_pick_field( $form_data, [ 'people_json', 'attendees_json' ], '' );
+    }
+
+    if ( ! isset( $top_level['roster_json'] ) ) {
+        $top_level['roster_json'] = mancamp_pick_field( $form_data, [ 'roster_json', 'people_json', 'attendees_json' ], '' );
+    }
+
+    if ( ! isset( $top_level['attendees_json'] ) ) {
+        $top_level['attendees_json'] = mancamp_pick_field( $form_data, [ 'attendees_json', 'people_json' ], '' );
+    }
+
+    return $top_level;
 }
 
 
@@ -327,7 +450,7 @@ function mancamp_build_payload( $formData, $insertId ) {
 // ============================================================
 
 function mancamp_extract_people_payload( $formData ) {
-    $people_raw = mancamp_pick_field( $formData, [ 'people_json', 'attendees_json', 'attendeesJson', 'roster_json' ], '' );
+    $people_raw = mancamp_pick_field( $formData, [ 'people_json', 'attendees_json', 'roster_json' ], '' );
 
     if ( $people_raw !== '' ) {
         $decoded = json_decode( wp_unslash( $people_raw ), true );
@@ -390,14 +513,16 @@ function mancamp_sanitise_people( $people, $formData = [] ) {
             'phone'                    => $phone,
             'age_group'                => $age_group,
             'age'                      => $age,
-            'program'                  => sanitize_text_field( $raw['program'] ?? $raw['program_type'] ?? $raw['programType'] ?? $default_program ),
-            'shirt'                    => strtoupper( sanitize_text_field( $raw['shirt'] ?? $raw['shirt_size'] ?? $raw['shirtSize'] ?? $default_shirt ) ),
+            'program_type'             => sanitize_text_field( $raw['program_type'] ?? $raw['program'] ?? $raw['programType'] ?? $default_program ),
+            'shirt_size'               => strtoupper( sanitize_text_field( $raw['shirt_size'] ?? $raw['shirt'] ?? $raw['shirtSize'] ?? $default_shirt ) ),
             'volunteer'                => mancamp_normalise_yes_no( $raw['volunteer'] ?? 'no' ),
             'attendance_type'          => mancamp_normalise_attendance_type( $raw['attendance_type'] ?? $raw['attendanceType'] ?? 'overnight' ),
             'guardian_link_key'        => sanitize_text_field( $raw['guardian_link_key'] ?? $raw['guardianLinkKey'] ?? '' ),
             'is_primary'               => ! empty( $raw['is_primary'] ) || ! empty( $raw['isPrimary'] ) || $idx === 0,
             'lodging_option_key'       => $lodging_option_key,
+            'is_minor'                 => $is_minor,
             'notes'                    => $notes,
+            'medical_notes'            => sanitize_textarea_field( $raw['medical_notes'] ?? '' ),
         ];
 
         $clean[] = $person;
@@ -432,15 +557,17 @@ function mancamp_build_single_person_from_fields( $formData ) {
         'phone'                    => $phone,
         'age'                      => is_numeric( $formData['age'] ?? $formData['ageNum'] ?? null ) ? (int) ( $formData['age'] ?? $formData['ageNum'] ) : '',
         'age_group'                => mancamp_normalise_age_group( $formData['age_group'] ?? '', $formData['age'] ?? $formData['ageNum'] ?? null ),
-        'program'                  => sanitize_text_field( $formData['program_type'] ?? $formData['program'] ?? 'standard' ),
-        'shirt'                    => strtoupper( sanitize_text_field( $formData['shirt_size'] ?? $formData['shirt'] ?? '' ) ),
+        'program_type'             => sanitize_text_field( $formData['program_type'] ?? $formData['program'] ?? 'standard' ),
+        'shirt_size'               => strtoupper( sanitize_text_field( $formData['shirt_size'] ?? $formData['shirt'] ?? '' ) ),
         'volunteer'                => 'no',
         'attendance_type'          => mancamp_normalise_attendance_type( $formData['attendance_type'] ?? 'overnight' ),
         'is_guardian'              => false,
+        'is_minor'                 => mancamp_normalise_age_group( $formData['age_group'] ?? '', $formData['age'] ?? $formData['ageNum'] ?? null ) === 'child',
         'guardian_link_key'        => sanitize_text_field( $formData['guardian_link_key'] ?? '' ),
         'is_primary'               => true,
         'lodging_option_key'       => mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? $formData['lodging_preference'] ?? '' ),
         'notes'                    => sanitize_textarea_field( $formData['notes'] ?? '' ),
+        'medical_notes'            => sanitize_textarea_field( $formData['medical_notes'] ?? '' ),
     ];
 }
 
@@ -457,7 +584,7 @@ function mancamp_sanitise_top_level_field( $field_key, $raw ) {
         return mancamp_sanitise_email( $raw );
     }
 
-    if ( in_array( $field_key, [ 'ageNum', 'age', 'registration_total', 'processing_fee', 'custom_payment_amount', 'square_total', 'amount_paid', 'attendee_count', 'rv_length' ], true ) ) {
+    if ( in_array( $field_key, [ 'ageNum', 'age', 'registration_total', 'processing_fee', 'attendee_count', 'rv_length' ], true ) ) {
         return is_numeric( $raw ) ? 0 + $raw : '';
     }
 
@@ -465,11 +592,11 @@ function mancamp_sanitise_top_level_field( $field_key, $raw ) {
         return mancamp_normalise_lodging_preference( $raw );
     }
 
-    if ( $field_key === 'pay_type' || $field_key === 'payment_method' ) {
+    if ( $field_key === 'payment_method' ) {
         return mancamp_normalise_pay_type( $raw );
     }
 
-    return $field_key === 'notes'
+    return in_array( $field_key, [ 'notes', 'medical_notes' ], true )
         ? sanitize_textarea_field( $raw )
         : sanitize_text_field( $raw );
 }
@@ -520,12 +647,12 @@ function mancamp_normalise_lodging_preference( $value ) {
         return $normalised;
     }
 
-    return $normalised;
+    return 'shared_cabin_connected';
 }
 
 function mancamp_normalise_pay_type( $value ) {
     $normalised = strtolower( sanitize_text_field( (string) $value ) );
-    if ( in_array( $normalised, [ 'offline', 'check', 'cash' ], true ) ) {
+    if ( in_array( $normalised, mancamp_offline_values(), true ) ) {
         return 'offline';
     }
     return 'square';
@@ -540,30 +667,30 @@ function mancamp_normalise_yes_no( $value ) {
     return strtolower( sanitize_text_field( (string) $value ) ) === 'yes' ? 'yes' : 'no';
 }
 
-function mancamp_collect_payment_meta( $formData, $top_level = [] ) {
+function mancamp_collect_payment_meta( $form_data, $payment = [], $top_level = [] ) {
     $method = mancamp_normalise_pay_type(
-        mancamp_pick_field( $formData, [ 'payment_method', 'paymentMethod', 'pay_type' ], $top_level['payment_method'] ?? 'square' )
+        $payment['payment_method'] ?? $payment['payment_mode'] ?? $payment['method'] ?? $top_level['payment_method'] ?? mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], 'square' )
     );
-    $payment_status = strtolower( sanitize_text_field(
-        mancamp_pick_field( $formData, [ 'payment_status', 'paymentStatus', 'payment-status', 'payment_status_field', 'payment' ], '' )
+    $status = strtolower( sanitize_text_field(
+        $payment['payment_status'] ?? $payment['status'] ?? $payment['transaction_status'] ?? 'paid'
     ) );
-    $payment_reference = sanitize_text_field(
-        mancamp_pick_field( $formData, [ 'payment_reference', 'paymentReference', 'transaction_id', 'transactionId', 'order_id', 'orderId', 'square_payment_id' ], '' )
+    $reference = sanitize_text_field(
+        $payment['payment_reference'] ?? $payment['transaction_id'] ?? $payment['charge_id'] ?? $payment['transaction_hash'] ?? $payment['reference'] ?? ''
     );
-    $registration_total = mancamp_format_money(
-        mancamp_pick_field( $formData, [ 'registration_total' ], $top_level['registration_total'] ?? 0 )
-    );
+    $registration_total = mancamp_format_money( $top_level['registration_total'] ?? mancamp_pick_field( $form_data, [ 'registration_total' ], 0 ) );
     $processing_fee = $method === 'square'
-        ? mancamp_format_money( mancamp_pick_field( $formData, [ 'processing_fee' ], $top_level['processing_fee'] ?? 0 ) )
+        ? mancamp_format_money( $top_level['processing_fee'] ?? mancamp_pick_field( $form_data, [ 'processing_fee' ], 0 ) )
         : mancamp_format_money( 0 );
-    $amount_paid_raw = mancamp_pick_field( $formData, [ 'amount_paid', 'total_paid', 'square_total', 'custom_payment_amount', 'custom-payment-amount' ], $top_level['custom_payment_amount'] ?? 0 );
-    $amount_paid = $amount_paid_raw !== '' ? mancamp_format_money( $amount_paid_raw ) : mancamp_format_money( (float) $registration_total + (float) $processing_fee );
-    $status = $payment_status !== '' ? $payment_status : ( $method === 'square' ? 'paid' : 'unpaid' );
+    $amount_paid_raw = $payment['payment_total'] ?? $payment['paid_total'] ?? $payment['total'] ?? $payment['amount'] ?? '';
+    if ( $amount_paid_raw === '' ) {
+        $amount_paid_raw = (float) $registration_total + (float) $processing_fee;
+    }
+    $amount_paid = mancamp_format_money( $amount_paid_raw );
 
     return [
         'method'            => $method,
         'status'            => $status,
-        'reference'         => $payment_reference,
+        'reference'         => $reference,
         'amountPaid'        => $amount_paid,
         'registrationTotal' => $registration_total,
         'processingFee'     => $processing_fee,
@@ -612,6 +739,45 @@ function mancamp_extract_lodging_request( $formData, $primary ) {
         'rvLengthFeet' => $type === 'rv_hookups' && mancamp_pick_field( $formData, [ 'rv_length' ], '' ) !== '' ? (int) mancamp_pick_field( $formData, [ 'rv_length' ], '' ) : null,
         'notes'        => sanitize_textarea_field( $formData['notes'] ?? '' ),
     ];
+}
+
+function mancamp_resolve_attendee_count( $top_level, $people ) {
+    $count = isset( $top_level['attendee_count'] ) && is_numeric( $top_level['attendee_count'] )
+        ? (int) $top_level['attendee_count']
+        : count( $people );
+
+    return $count > 0 ? $count : count( $people );
+}
+
+function mancamp_warn_for_missing_fields( $entry_id, $top_level ) {
+    $required_fields = [
+        'people_json',
+        'roster_json',
+        'attendee_count',
+        'lodging_option_key',
+        'lodging_option_label',
+        'lodging_request_json',
+        'rv_amp',
+        'rv_length',
+        'registration_total',
+        'processing_fee',
+        'payment_method',
+        'attendees_json',
+    ];
+
+    foreach ( $required_fields as $field ) {
+        if ( isset( $top_level[ $field ] ) && $top_level[ $field ] !== '' ) {
+            continue;
+        }
+        mancamp_log( '[entry ' . (int) $entry_id . '][warning] Missing hidden field "' . $field . '" in Fluent Forms submission.', 'error' );
+    }
+}
+
+function mancamp_submission_timestamp( $submission ) {
+    $source = $submission['created_at'] ?? $submission['createdAt'] ?? '';
+    $timestamp = $source ? strtotime( $source ) : false;
+
+    return $timestamp ? gmdate( 'c', $timestamp ) : current_time( 'c', true );
 }
 
 function mancamp_lodging_label( $key ) {
@@ -734,7 +900,7 @@ function mancamp_post_to_gas( $payload ) {
     }
 
     $response_body = wp_remote_retrieve_body( $response );
-    mancamp_log( 'GAS body — ' . substr( $response_body, 0, 500 ) );
+    mancamp_log( 'GAS body - ' . substr( $response_body, 0, 500 ) );
 
     if ( $http_code < 200 || $http_code >= 300 ) {
         return new WP_Error( 'gas_http_error', 'GAS returned HTTP ' . $http_code );
@@ -753,7 +919,7 @@ function mancamp_post_to_gas( $payload ) {
     // Validate the GAS-level success flag
     if ( isset( $decoded['success'] ) && $decoded['success'] === false ) {
         if ( ! empty( $decoded['duplicate'] ) ) {
-            mancamp_log( 'GAS duplicate — skipping.' );
+            mancamp_log( 'GAS duplicate - skipping.' );
             return $decoded;
         }
         return new WP_Error( 'gas_logic_error', 'GAS failure: ' . ( $decoded['error'] ?? 'Unknown' ) );
@@ -777,7 +943,7 @@ function mancamp_post_to_gas( $payload ) {
 // SECTION 10 — FAILURE STORAGE
 // ============================================================
 
-function mancamp_store_failed_payload( $insertId, $payload, $error ) {
+function mancamp_store_failed_payload( $insertId, $payload, $error, $is_retry = false ) {
     $failed = get_option( MANCAMP_FAILED_WEBHOOKS_OPTION, [] );
     $updated = false;
 
@@ -786,9 +952,8 @@ function mancamp_store_failed_payload( $insertId, $payload, $error ) {
             continue;
         }
         $entry['payload'] = $payload;
-        $entry['error'] = $error;
         $entry['failed_at'] = $entry['failed_at'] ?? current_time( 'mysql' );
-        $entry['attempts'] = isset( $entry['attempts'] ) ? (int) $entry['attempts'] : 1;
+        $entry['attempts'] = $is_retry ? ( (int) ( $entry['attempts'] ?? 1 ) + 1 ) : (int) ( $entry['attempts'] ?? 1 );
         $updated = true;
         break;
     }
@@ -798,7 +963,6 @@ function mancamp_store_failed_payload( $insertId, $payload, $error ) {
         $failed[] = [
             'entry_id'  => (int) $insertId,
             'payload'   => $payload,
-            'error'     => $error,
             'failed_at' => current_time( 'mysql' ),
             'attempts'  => 1,
         ];
@@ -806,7 +970,7 @@ function mancamp_store_failed_payload( $insertId, $payload, $error ) {
 
     update_option( MANCAMP_FAILED_WEBHOOKS_OPTION, array_values( $failed ), false );
     mancamp_schedule_retry_event();
-    mancamp_log( 'Failed payload stored for entry ' . $insertId, 'error' );
+    mancamp_log( 'Failed payload stored for entry ' . $insertId . ': ' . $error, 'error' );
 }
 
 function mancamp_remove_failed_payload( $insertId ) {
@@ -824,12 +988,22 @@ function mancamp_add_cron_schedule( $schedules ) {
         'interval' => 15 * MINUTE_IN_SECONDS,
         'display'  => 'Every 15 Minutes (Man Camp)',
     ];
+    $schedules['mancamp_every_30_minutes'] = [
+        'interval' => 30 * MINUTE_IN_SECONDS,
+        'display'  => 'Every 30 Minutes (Man Camp Offline Sweep)',
+    ];
     return $schedules;
 }
 
 function mancamp_schedule_retry_event() {
     if ( ! wp_next_scheduled( MANCAMP_RETRY_HOOK ) ) {
         wp_schedule_event( time() + ( 15 * MINUTE_IN_SECONDS ), 'mancamp_every_15_minutes', MANCAMP_RETRY_HOOK );
+    }
+}
+
+function mancamp_schedule_offline_sweep_event() {
+    if ( ! wp_next_scheduled( MANCAMP_OFFLINE_SWEEP_HOOK ) ) {
+        wp_schedule_event( time() + ( 30 * MINUTE_IN_SECONDS ), 'mancamp_every_30_minutes', MANCAMP_OFFLINE_SWEEP_HOOK );
     }
 }
 
@@ -847,18 +1021,69 @@ function mancamp_retry_failed_webhooks() {
             continue;
         }
 
-        $result = mancamp_post_to_gas( $entry['payload'] ?? [] );
+        mancamp_log_event( (int) ( $entry['entry_id'] ?? 0 ), 'retry', 'Cron retry attempting webhook delivery.' );
+        $result = mancamp_process_entry_webhook( (int) ( $entry['entry_id'] ?? 0 ), [], true );
         if ( is_wp_error( $result ) ) {
-            $entry['attempts'] = $attempts + 1;
-            $entry['error'] = $result->get_error_message();
             $remaining[] = $entry;
             continue;
         }
-
-        delete_option( 'mancamp_pending_' . (int) ( $entry['entry_id'] ?? 0 ) );
     }
 
     update_option( MANCAMP_FAILED_WEBHOOKS_OPTION, array_values( $remaining ), false );
+}
+
+function mancamp_sweep_offline_submissions() {
+    $status = get_option( MANCAMP_OFFLINE_SWEEP_STATUS_OPTION, [
+        'last_run' => '',
+        'processed_count' => 0,
+    ] );
+    $processed_count = 0;
+
+    if ( ! function_exists( 'wpFluent' ) || ! mancamp_form_id() ) {
+        $status['last_run'] = current_time( 'mysql' );
+        $status['processed_count'] = 0;
+        update_option( MANCAMP_OFFLINE_SWEEP_STATUS_OPTION, $status, false );
+        return;
+    }
+
+    try {
+        $submissions = wpFluent()->table( 'fluentform_submissions' )
+            ->where( 'form_id', mancamp_form_id() )
+            ->where( 'created_at', '>=', date( 'Y-m-d H:i:s', strtotime( '-48 hours' ) ) )
+            ->get();
+    } catch ( Exception $e ) {
+        mancamp_log_event( 0, 'failed', 'Offline sweep query failed: ' . $e->getMessage() );
+        $status['last_run'] = current_time( 'mysql' );
+        $status['processed_count'] = 0;
+        update_option( MANCAMP_OFFLINE_SWEEP_STATUS_OPTION, $status, false );
+        return;
+    }
+
+    foreach ( $submissions as $submission ) {
+        $submission_record = mancamp_normalise_submission_argument( $submission );
+        if ( is_wp_error( $submission_record ) ) {
+            continue;
+        }
+
+        $entry_id = (int) ( $submission_record['id'] ?? 0 );
+        if ( $entry_id <= 0 || mancamp_has_sent_entry_id( $entry_id ) ) {
+            continue;
+        }
+
+        if ( ! mancamp_is_offline_submission( $submission_record ) ) {
+            continue;
+        }
+
+        $processed_count++;
+        mancamp_process_entry_webhook( $entry_id, [
+            'submission' => $submission_record,
+            'payment'    => mancamp_get_payment_record( $entry_id ),
+        ], false, 'offline_sweep', 'Offline sweep attempting webhook delivery.' );
+    }
+
+    $status['last_run'] = current_time( 'mysql' );
+    $status['processed_count'] = $processed_count;
+    update_option( MANCAMP_OFFLINE_SWEEP_STATUS_OPTION, $status, false );
 }
 
 function mancamp_admin_notice_for_stale_failures() {
@@ -902,10 +1127,11 @@ function mancamp_save_settings() {
     check_admin_referer( 'mancamp_save_settings', 'mancamp_settings_nonce' );
 
     update_option( MANCAMP_OPTION_GROUP, [
-        'gas_url'    => esc_url_raw( trim( $_POST['gas_url']   ?? '' ) ),
-        'form_id'    => (int) ( $_POST['form_id']   ?? 0 ),
-        'page_slug'  => trim( sanitize_text_field( $_POST['page_slug'] ?? '' ), '/' ),
-        'debug_mode' => isset( $_POST['debug_mode'] ),
+        'gas_url'        => esc_url_raw( trim( $_POST['gas_url']        ?? '' ) ),
+        'form_id'        => (int) ( $_POST['form_id']        ?? 0 ),
+        'page_slug'      => trim( sanitize_text_field( $_POST['page_slug']      ?? '' ), '/' ),
+        'debug_mode'     => isset( $_POST['debug_mode'] ),
+        'offline_values' => sanitize_text_field( $_POST['offline_values'] ?? '' ),
     ] );
 
     wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&saved=1' ) );
@@ -917,26 +1143,23 @@ function mancamp_handle_retry() {
     check_admin_referer( 'mancamp_retry', 'mancamp_retry_nonce' );
 
     $entry_id = (int) ( $_POST['mancamp_retry_entry_id'] ?? 0 );
-    $failed = get_option( MANCAMP_FAILED_WEBHOOKS_OPTION, [] );
-    $entry = null;
-    foreach ( $failed as $candidate ) {
-        if ( (int) ( $candidate['entry_id'] ?? 0 ) === $entry_id ) {
-            $entry = $candidate;
-            break;
-        }
+
+    if ( $entry_id === 0 ) {
+        mancamp_retry_failed_webhooks();
+        wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( 'batch' ) ) );
+        exit;
     }
 
-    if ( $entry && is_array( $entry ) ) {
-        $result = mancamp_post_to_gas( $entry['payload'] );
+    if ( $entry_id > 0 ) {
+        mancamp_log_event( $entry_id, 'retry', 'Manual retry attempting webhook delivery.' );
+        $result = mancamp_process_entry_webhook( $entry_id, [], true );
         if ( is_wp_error( $result ) ) {
             wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_failed=' . urlencode( $result->get_error_message() ) ) );
         } else {
-            delete_option( 'mancamp_pending_' . $entry_id );
-            mancamp_remove_failed_payload( $entry_id );
             if ( ! empty( $result['duplicate'] ) ) {
                 wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( 'already-processed' ) ) );
             } else {
-                wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( $result['registrationId'] ?? 'sent' ) ) );
+                wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( 'sent' ) ) );
             }
         }
     } else {
@@ -953,12 +1176,13 @@ function mancamp_handle_manual_resync() {
 
     if ( $ff_entry_id > 0 && function_exists( 'wpFluentForm' ) ) {
         try {
-            $submission = wpFluentForm()->make( 'FluentForm\App\Models\Submission' )->find( $ff_entry_id );
-            if ( $submission ) {
-                mancamp_handle_submission( $ff_entry_id, json_decode( $submission->response, true ), (object) [ 'id' => mancamp_form_id() ] );
+            $result = mancamp_process_entry_webhook( $ff_entry_id, [], true );
+            if ( ! is_wp_error( $result ) ) {
                 wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_ok=' . $ff_entry_id ) );
                 exit;
             }
+            wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_failed=' . urlencode( $result->get_error_message() ) ) );
+            exit;
         } catch ( Exception $e ) {
             wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_failed=' . urlencode( $e->getMessage() ) ) );
             exit;
@@ -966,6 +1190,15 @@ function mancamp_handle_manual_resync() {
     }
 
     wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_failed=' . urlencode( 'Entry not found.' ) ) );
+    exit;
+}
+
+function mancamp_handle_run_offline_sweep() {
+    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Insufficient permissions.' );
+    check_admin_referer( 'mancamp_run_offline_sweep', 'mancamp_run_offline_sweep_nonce' );
+
+    mancamp_sweep_offline_submissions();
+    wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&sweep_ok=1' ) );
     exit;
 }
 
@@ -977,10 +1210,11 @@ function mancamp_handle_manual_resync() {
 function mancamp_admin_page() {
     if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Insufficient permissions.' );
 
-    $gas_url    = mancamp_gas_url();
-    $form_id    = mancamp_form_id();
-    $page_slug  = mancamp_page_slug();
-    $debug_mode = mancamp_debug();
+    $gas_url        = mancamp_gas_url();
+    $form_id        = mancamp_form_id();
+    $page_slug      = mancamp_page_slug();
+    $debug_mode     = mancamp_debug();
+    $offline_values = implode( ', ', mancamp_offline_values() );
 
     $gas_ok  = ! empty( $gas_url );
     $form_ok = $form_id > 0;
@@ -1002,10 +1236,14 @@ function mancamp_admin_page() {
     $retry_fail  = $_GET['retry_failed']  ?? false;
     $resync_ok   = $_GET['resync_ok']     ?? false;
     $resync_fail = $_GET['resync_failed'] ?? false;
+    $sweep_ok    = isset( $_GET['sweep_ok'] );
 
     $failed_entries = get_option( MANCAMP_FAILED_WEBHOOKS_OPTION, [] );
-
-    $log = array_reverse( array_slice( get_option( 'mancamp_id_log', [] ), -20 ) );
+    $webhook_log = array_reverse( array_slice( get_option( MANCAMP_WEBHOOK_LOG_OPTION, [] ), -50 ) );
+    $offline_sweep_status = get_option( MANCAMP_OFFLINE_SWEEP_STATUS_OPTION, [
+        'last_run' => '',
+        'processed_count' => 0,
+    ] );
 
     ?>
     <div class="wrap" style="max-width:900px;">
@@ -1017,6 +1255,8 @@ function mancamp_admin_page() {
     <?php if ( $retry_ok ) : ?>
       <?php if ( $retry_ok === 'already-processed' ) : ?>
         <div class="notice notice-success is-dismissible"><p>✔ Already processed — this registration was received by GAS on the original submission. The failed entry has been cleared.</p></div>
+      <?php elseif ( $retry_ok === 'batch' ) : ?>
+        <div class="notice notice-success is-dismissible"><p>✔ Manual retry pass finished for all pending failed webhooks.</p></div>
       <?php else : ?>
         <div class="notice notice-success is-dismissible"><p>✔ Retry successful — GAS ID: <code><?php echo esc_html( $retry_ok ); ?></code></p></div>
       <?php endif; ?>
@@ -1029,6 +1269,9 @@ function mancamp_admin_page() {
     <?php endif; ?>
     <?php if ( $resync_fail ) : ?>
       <div class="notice notice-error is-dismissible"><p>✘ Resync failed: <?php echo esc_html( $resync_fail ); ?></p></div>
+    <?php endif; ?>
+    <?php if ( $sweep_ok ) : ?>
+      <div class="notice notice-success is-dismissible"><p>✔ Offline payment sweep completed.</p></div>
     <?php endif; ?>
 
 
@@ -1111,6 +1354,22 @@ function mancamp_admin_page() {
               </td>
             </tr>
 
+            <!-- Offline Payment Values -->
+            <tr>
+              <th scope="row"><label for="offline_values">Offline Payment Values</label></th>
+              <td>
+                <input type="text" id="offline_values" name="offline_values"
+                  value="<?php echo esc_attr( $offline_values ); ?>"
+                  class="regular-text"
+                  placeholder="offline, check, cash, test">
+                <p class="description">
+                  Comma-separated list of payment method values that should bypass Square and be treated as offline/cash.
+                  These must match the exact option values in your Fluent Forms payment field (e.g. <code>test</code>, <code>check</code>, <code>cash</code>).
+                  The widget reads this list to zero out the processing fee and suppress Square.
+                </p>
+              </td>
+            </tr>
+
             <!-- Debug Mode -->
             <tr>
               <th scope="row">Debug Mode</th>
@@ -1128,6 +1387,18 @@ function mancamp_admin_page() {
           </tbody>
         </table>
         <?php submit_button( 'Save Settings' ); ?>
+      </form>
+    </div>
+
+    <!-- ── Offline Payment Sweep ───────────────────────────────────── -->
+    <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;margin-bottom:24px;">
+      <h2 style="margin-top:0;">Offline Payment Sweep</h2>
+      <p><strong>Last Sweep Run:</strong> <?php echo esc_html( $offline_sweep_status['last_run'] ?: 'Never' ); ?></p>
+      <p><strong>Processed In Last Sweep:</strong> <?php echo (int) ( $offline_sweep_status['processed_count'] ?? 0 ); ?></p>
+      <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+        <?php wp_nonce_field( 'mancamp_run_offline_sweep', 'mancamp_run_offline_sweep_nonce' ); ?>
+        <input type="hidden" name="action" value="mancamp_run_offline_sweep">
+        <button type="submit" class="button">Run Sweep Now</button>
       </form>
     </div>
 
@@ -1161,7 +1432,7 @@ function mancamp_admin_page() {
 
     <!-- ── Field Reference ───────────────────────────────────────────── -->
     <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;margin-bottom:24px;">
-      <h2 style="margin-top:0;">Fluent Forms Field Name Reference <span style="color:#646970;font-size:13px;font-weight:400;">(v2.2.0)</span></h2>
+      <h2 style="margin-top:0;">Fluent Forms Field Name Reference <span style="color:#646970;font-size:13px;font-weight:400;">(v2.3.0)</span></h2>
       <p style="color:#646970;font-size:13px;">These are the preferred Fluent Forms field names for the Man Camp form. Use them as the field <strong>Name</strong> values in the form builder.</p>
       <table class="widefat striped" style="font-size:12px;">
         <thead><tr><th>FF Field Name</th><th>GAS Key</th><th>Type</th><th>Notes</th></tr></thead>
@@ -1170,22 +1441,30 @@ function mancamp_admin_page() {
           <tr><td><code>last_name</code></td>               <td><code>last_name</code></td>               <td>Text</td>     <td>Primary registrant last name</td></tr>
           <tr><td><code>email</code></td>                   <td><code>email</code></td>                   <td>Email</td>    <td>Primary contact email</td></tr>
           <tr><td><code>phone</code></td>                   <td><code>phone</code></td>                   <td>Phone</td>    <td>Primary contact phone</td></tr>
-          <tr><td><code>ageNum</code></td>                  <td><code>ageNum</code></td>                  <td>Number</td>   <td>Primary registrant age used for minor and Young Men&#8217;s validation</td></tr>
-          <tr><td><code>pay_type</code></td>                <td><code>pay_type</code></td>                <td>Select</td>   <td>Application-level payment selector. Use <code>square</code> or <code>offline</code>. Do not use <code>payment_method</code> for this decision.</td></tr>
-          <tr><td><code>lodging_option_key</code></td>      <td><code>lodging_option_key</code></td>      <td>Hidden</td>   <td><code>cabin_connected</code>, <code>cabin_detached</code>, <code>rv_hookups</code>, <code>tent_no_hookups</code>, <code>sabbath_only</code></td></tr>
+          <tr><td><code>age</code></td>                     <td><code>age</code></td>                     <td>Number</td>   <td>Primary registrant age when the builder mirrors this field directly</td></tr>
+          <tr><td><code>age_group</code></td>               <td><code>age_group</code></td>               <td>Hidden</td>   <td><code>adult</code> or <code>child</code></td></tr>
+          <tr><td><code>is_minor</code></td>                <td><code>is_minor</code></td>                <td>Hidden</td>   <td>Primary attendee minor flag</td></tr>
+          <tr><td><code>is_guardian</code></td>             <td><code>is_guardian</code></td>             <td>Hidden</td>   <td>Primary attendee guardian flag</td></tr>
+          <tr><td><code>program_type</code></td>            <td><code>program_type</code></td>            <td>Hidden</td>   <td>Program selection for the primary attendee</td></tr>
+          <tr><td><code>shirt_size</code></td>              <td><code>shirt_size</code></td>              <td>Hidden</td>   <td>Primary attendee shirt size</td></tr>
+          <tr><td><code>lodging_option_key</code></td>      <td><code>lodging_option_key</code></td>      <td>Hidden</td>   <td><code>shared_cabin_connected</code>, <code>shared_cabin_detached</code>, <code>rv_hookups</code>, <code>tent_no_hookups</code>, <code>sabbath_attendance_only</code></td></tr>
+          <tr><td><code>lodging_option_label</code></td>    <td><code>lodging_option_label</code></td>    <td>Hidden</td>   <td>Human-readable lodging label</td></tr>
+          <tr><td><code>lodging_request_json</code></td>    <td><code>lodging_request_json</code></td>    <td>Hidden</td>   <td>JSON with type, RV details, and notes</td></tr>
+          <tr><td><code>attendance_type</code></td>         <td><code>attendance_type</code></td>         <td>Hidden</td>   <td><code>overnight</code> or <code>sabbath_only</code></td></tr>
+          <tr><td><code>people_json</code></td>             <td><code>people_json</code></td>             <td>Hidden</td>   <td>Canonical attendee roster JSON written by the widget</td></tr>
+          <tr><td><code>roster_json</code></td>             <td><code>roster_json</code></td>             <td>Hidden</td>   <td>Backward-compatibility mirror of <code>people_json</code></td></tr>
+          <tr><td><code>attendee_count</code></td>          <td><code>attendee_count</code></td>          <td>Hidden</td>   <td>Integer count of attendees</td></tr>
           <tr><td><code>rv_amp</code></td>                  <td><code>rv_amp</code></td>                  <td>Hidden</td>   <td>Required only when <code>lodging_option_key = rv_hookups</code></td></tr>
           <tr><td><code>rv_length</code></td>               <td><code>rv_length</code></td>               <td>Hidden</td>   <td>Required only when <code>lodging_option_key = rv_hookups</code></td></tr>
           <tr><td><code>registration_total</code></td>      <td><code>registration_total</code></td>      <td>Hidden</td>   <td>Total before processing fee. Volunteers stay in the roster but do not increase this total.</td></tr>
-          <tr><td><code>processing_fee</code></td>          <td><code>processing_fee</code></td>          <td>Hidden</td>   <td>Square fee from the widget. Must be <code>0</code> when <code>pay_type = offline</code>.</td></tr>
-          <tr><td><code>custom_payment_amount</code></td>   <td><code>custom_payment_amount</code></td>   <td>Square</td>   <td>Final amount charged by Fluent Forms Square. Frontend may also write <code>custom-payment-amount</code> in the DOM for compatibility.</td></tr>
-          <tr><td><code>payment_status</code></td>          <td><code>payment_status</code></td>          <td>Hidden</td>   <td>Capture Square / Fluent Forms payment status when available</td></tr>
-          <tr><td><code>payment_reference</code></td>       <td><code>payment_reference</code></td>       <td>Hidden</td>   <td>Square order / transaction reference when available</td></tr>
+          <tr><td><code>processing_fee</code></td>          <td><code>processing_fee</code></td>          <td>Hidden</td>   <td>Square fee from the widget. Must be <code>0.00</code> for offline/check/cash flows.</td></tr>
+          <tr><td><code>payment_method</code></td>          <td><code>payment_method</code></td>          <td>Hidden</td>   <td><code>square</code> or <code>offline</code> as stored by the widget</td></tr>
           <tr><td><code>notes</code></td>                   <td><code>notes</code></td>                   <td>Textarea</td> <td>General registration notes</td></tr>
-          <tr><td><code>attendees_json</code></td>          <td><code>attendees_json</code></td>          <td>Hidden</td>   <td>Canonical attendee roster written by the custom widget</td></tr>
-          <tr><td><code>roster_json</code></td>             <td><code>roster</code></td>                  <td>Hidden</td>   <td>Optional legacy mirror only. New code should use <code>attendees_json</code>.</td></tr>
+          <tr><td><code>medical_notes</code></td>           <td><code>medical_notes</code></td>           <td>Textarea</td> <td>Medical/disclosure notes when supplied</td></tr>
+          <tr><td><code>attendees_json</code></td>          <td><code>attendees_json</code></td>          <td>Hidden</td>   <td>Legacy mirror of <code>people_json</code> retained for compatibility</td></tr>
         </tbody>
       </table>
-      <p style="color:#646970;font-size:12px;margin-top:10px;">The live form uses a custom JavaScript builder rendered into <code>#mancamp-builder</code>. This plugin now expects the hidden-field contract above rather than repeater rows or payment-item fields.</p>
+      <p style="color:#646970;font-size:12px;margin-top:10px;">The live form uses a custom JavaScript builder rendered into <code>#mancamp-builder</code>. This plugin expects the hidden-field contract above and waits until Fluent Forms marks payment complete before posting to GAS.</p>
     </div>
 
 
@@ -1210,19 +1489,26 @@ function mancamp_admin_page() {
     <!-- ── Failed Submissions ────────────────────────────────────────── -->
     <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;margin-bottom:24px;">
       <h2 style="margin-top:0;">
-        Failed Submissions
+        Pending Failed Webhooks
         <?php if ( ! empty( $failed_entries ) ) : ?>
           <span style="background:#d63638;color:#fff;padding:2px 9px;border-radius:10px;font-size:13px;vertical-align:middle;margin-left:6px;">
             <?php echo count( $failed_entries ); ?>
           </span>
         <?php endif; ?>
       </h2>
+      <p><strong>Pending Failed Webhooks:</strong> <?php echo (int) count( $failed_entries ); ?></p>
+      <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-bottom:16px;">
+        <?php wp_nonce_field( 'mancamp_retry', 'mancamp_retry_nonce' ); ?>
+        <input type="hidden" name="action" value="mancamp_retry">
+        <input type="hidden" name="mancamp_retry_entry_id" value="0">
+        <button type="submit" class="button">Manual Retry Pending Webhooks</button>
+      </form>
       <?php if ( empty( $failed_entries ) ) : ?>
-        <p style="color:green;">✔ No failed submissions. All registrations reached GAS.</p>
+        <p style="color:green;">✔ No failed webhooks are pending.</p>
       <?php else : ?>
         <table class="widefat striped">
           <thead>
-            <tr><th>FF Entry</th><th>Registrant</th><th>Email</th><th>Failed At</th><th>Error</th><th></th></tr>
+            <tr><th>FF Entry</th><th>Registrant</th><th>Email</th><th>Failed At</th><th>Attempts</th><th></th></tr>
           </thead>
           <tbody>
             <?php foreach ( $failed_entries as $entry ) :
@@ -1233,7 +1519,7 @@ function mancamp_admin_page() {
               <td><?php echo esc_html( $p['primaryContact']['name']  ?? $p['registrantName'] ?? $p['registrationLabel'] ?? '—' ); ?></td>
               <td><?php echo esc_html( $p['primaryContact']['email'] ?? $p['registrantEmail'] ?? $p['email'] ?? '—' ); ?></td>
               <td><?php echo esc_html( $entry['failed_at']   ?? '—' ); ?></td>
-              <td style="font-size:12px;max-width:200px;word-break:break-word;"><?php echo esc_html( $entry['error'] ?? '—' ); ?></td>
+              <td><?php echo esc_html( $entry['attempts'] ?? 1 ); ?></td>
               <td>
                 <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
                   <?php wp_nonce_field( 'mancamp_retry', 'mancamp_retry_nonce' ); ?>
@@ -1250,20 +1536,21 @@ function mancamp_admin_page() {
     </div>
 
 
-    <!-- ── Recent Successes ──────────────────────────────────────────── -->
+    <!-- ── Webhook Log ──────────────────────────────────────────── -->
     <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;">
-      <h2 style="margin-top:0;">Recent Successful Registrations <span style="color:#646970;font-size:13px;font-weight:400;">(last 20)</span></h2>
-      <?php if ( empty( $log ) ) : ?>
-        <p>No registrations logged yet.</p>
+      <h2 style="margin-top:0;">View Webhook Log <span style="color:#646970;font-size:13px;font-weight:400;">(last 50)</span></h2>
+      <?php if ( empty( $webhook_log ) ) : ?>
+        <p>No webhook activity logged yet.</p>
       <?php else : ?>
         <table class="widefat striped" style="max-width:700px;">
-          <thead><tr><th>FF Entry ID</th><th>GAS Registration ID</th><th>Timestamp</th></tr></thead>
+          <thead><tr><th>Timestamp</th><th>FF Entry ID</th><th>Status</th><th>Message</th></tr></thead>
           <tbody>
-            <?php foreach ( $log as $entry ) : ?>
+            <?php foreach ( $webhook_log as $entry ) : ?>
             <tr>
-              <td><?php echo esc_html( $entry['ff_entry_id']     ?? '—' ); ?></td>
-              <td><code><?php echo esc_html( $entry['registration_id'] ?? '—' ); ?></code></td>
-              <td><?php echo esc_html( $entry['timestamp']       ?? '—' ); ?></td>
+              <td><?php echo esc_html( $entry['timestamp'] ?? '—' ); ?></td>
+              <td><?php echo esc_html( $entry['entry_id'] ?? '—' ); ?></td>
+              <td><code><?php echo esc_html( $entry['status'] ?? '—' ); ?></code></td>
+              <td><?php echo esc_html( $entry['message'] ?? '—' ); ?></td>
             </tr>
             <?php endforeach; ?>
           </tbody>
@@ -1285,6 +1572,209 @@ function mancamp_log( $message, $level = 'info' ) {
     error_log( '[ManCamp][' . strtoupper( $level ) . '] ' . $message );
 }
 
+function mancamp_log_event( $entry_id, $status, $message, $force_error_log = false ) {
+    $log = get_option( MANCAMP_WEBHOOK_LOG_OPTION, [] );
+    $log[] = [
+        'timestamp' => current_time( 'mysql' ),
+        'entry_id'  => (int) $entry_id,
+        'status'    => sanitize_key( $status ),
+        'message'   => sanitize_text_field( $message ),
+    ];
+
+    if ( count( $log ) > 50 ) {
+        $log = array_slice( $log, -50 );
+    }
+
+    update_option( MANCAMP_WEBHOOK_LOG_OPTION, $log, false );
+
+    if ( $force_error_log || mancamp_debug() ) {
+        mancamp_log( '[entry ' . (int) $entry_id . '][' . $status . '] ' . $message, $status === 'failed' ? 'error' : 'info' );
+    }
+}
+
+function mancamp_has_sent_entry_id( $entry_id ) {
+    $records = get_option( MANCAMP_SENT_ENTRY_IDS_OPTION, [] );
+    foreach ( $records as $record ) {
+        if ( (int) ( $record['entry_id'] ?? 0 ) === (int) $entry_id ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function mancamp_mark_entry_sent( $entry_id ) {
+    $records = get_option( MANCAMP_SENT_ENTRY_IDS_OPTION, [] );
+    $records[] = [
+        'entry_id' => (int) $entry_id,
+        'sent_at'  => current_time( 'mysql' ),
+    ];
+    update_option( MANCAMP_SENT_ENTRY_IDS_OPTION, array_values( $records ), false );
+    mancamp_prune_sent_entry_ids();
+}
+
+function mancamp_prune_sent_entry_ids() {
+    $records = get_option( MANCAMP_SENT_ENTRY_IDS_OPTION, [] );
+    if ( empty( $records ) ) {
+        return;
+    }
+
+    $cutoff = time() - ( 30 * DAY_IN_SECONDS );
+    $records = array_values( array_filter( $records, static function ( $record ) use ( $cutoff ) {
+        $sent_at = isset( $record['sent_at'] ) ? strtotime( $record['sent_at'] ) : false;
+        return ! $sent_at || $sent_at >= $cutoff;
+    } ) );
+
+    update_option( MANCAMP_SENT_ENTRY_IDS_OPTION, $records, false );
+}
+
+function mancamp_resolve_payment_hook_context( $args ) {
+    $entry_id = 0;
+    $form_id = 0;
+    $submission = [];
+    $payment = [];
+    $numeric_args = [];
+
+    foreach ( $args as $arg ) {
+        if ( is_numeric( $arg ) ) {
+            $numeric_args[] = (int) $arg;
+            continue;
+        }
+
+        if ( is_object( $arg ) ) {
+            $arg = get_object_vars( $arg );
+        }
+
+        if ( ! is_array( $arg ) ) {
+            continue;
+        }
+
+        if ( ! $entry_id ) {
+            $entry_id = (int) ( $arg['submission_id'] ?? $arg['entry_id'] ?? $arg['id'] ?? 0 );
+        }
+
+        if ( ! $form_id ) {
+            $form_id = (int) ( $arg['form_id'] ?? 0 );
+        }
+
+        if ( isset( $arg['response'] ) || isset( $arg['created_at'] ) ) {
+            $submission = $arg;
+        }
+
+        if ( isset( $arg['payment_status'] ) || isset( $arg['transaction_id'] ) || isset( $arg['payment_total'] ) ) {
+            $payment = array_merge( $payment, $arg );
+        }
+    }
+
+    if ( ! $entry_id && ! empty( $numeric_args ) ) {
+        $entry_id = (int) end( $numeric_args );
+    }
+
+    if ( ! $entry_id ) {
+        return new WP_Error( 'missing_entry_id', 'Could not resolve entry_id from Fluent Forms payment hook arguments.' );
+    }
+
+    if ( empty( $submission ) ) {
+        $submission = mancamp_get_submission_record( $entry_id );
+        if ( is_wp_error( $submission ) ) {
+            return $submission;
+        }
+    }
+
+    if ( ! $form_id ) {
+        $form_id = (int) ( $submission['form_id'] ?? 0 );
+    }
+
+    if ( empty( $payment ) ) {
+        $payment = mancamp_get_payment_record( $entry_id );
+    }
+
+    return [
+        'entry_id'   => $entry_id,
+        'form_id'    => $form_id,
+        'submission' => $submission,
+        'payment'    => is_array( $payment ) ? $payment : [],
+    ];
+}
+
+function mancamp_get_submission_record( $entry_id ) {
+    global $wpdb;
+
+    $table = $wpdb->prefix . 'fluentform_submissions';
+    $row = $wpdb->get_row(
+        $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d LIMIT 1", $entry_id ),
+        ARRAY_A
+    );
+
+    if ( ! $row ) {
+        return new WP_Error( 'submission_not_found', 'Fluent Forms submission was not found.' );
+    }
+
+    $response = [];
+    if ( ! empty( $row['response'] ) ) {
+        $decoded = json_decode( $row['response'], true );
+        if ( is_array( $decoded ) ) {
+            $response = $decoded;
+        }
+    }
+    $row['response'] = $response;
+
+    return $row;
+}
+
+function mancamp_get_payment_record( $entry_id ) {
+    global $wpdb;
+
+    $table = $wpdb->prefix . 'fluentform_transactions';
+    $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) );
+    if ( $exists !== $table ) {
+        return [];
+    }
+
+    $row = $wpdb->get_row(
+        $wpdb->prepare( "SELECT * FROM {$table} WHERE submission_id = %d ORDER BY id DESC LIMIT 1", $entry_id ),
+        ARRAY_A
+    );
+
+    return is_array( $row ) ? $row : [];
+}
+
+function mancamp_normalise_submission_argument( $submission, $entry_id = 0 ) {
+    if ( is_object( $submission ) ) {
+        $submission = get_object_vars( $submission );
+    }
+
+    if ( ! is_array( $submission ) || empty( $submission ) ) {
+        return mancamp_get_submission_record( $entry_id );
+    }
+
+    if ( ! isset( $submission['id'] ) && $entry_id > 0 ) {
+        $submission['id'] = $entry_id;
+    }
+
+    if ( isset( $submission['response'] ) && is_string( $submission['response'] ) ) {
+        $decoded = json_decode( $submission['response'], true );
+        $submission['response'] = is_array( $decoded ) ? $decoded : [];
+    } elseif ( ! isset( $submission['response'] ) ) {
+        $submission['response'] = [];
+    }
+
+    return $submission;
+}
+
+function mancamp_is_offline_submission( $submission, $payment = [] ) {
+    $submission = mancamp_normalise_submission_argument( $submission, 0 );
+    if ( is_wp_error( $submission ) ) {
+        return false;
+    }
+
+    $form_data = is_array( $submission['response'] ?? null ) ? $submission['response'] : [];
+    $method = mancamp_normalise_pay_type(
+        $payment['payment_method'] ?? $payment['payment_mode'] ?? $payment['method'] ?? mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], 'square' )
+    );
+
+    return $method === 'offline';
+}
+
 
 // ============================================================
 // SECTION 14 — ACTIVATION / DEACTIVATION
@@ -1304,8 +1794,14 @@ function mancamp_activate() {
         'debug_mode' => false,
     ] );
     add_option( MANCAMP_FAILED_WEBHOOKS_OPTION, [] );
-    add_option( 'mancamp_id_log',      [] );
+    add_option( MANCAMP_SENT_ENTRY_IDS_OPTION, [] );
+    add_option( MANCAMP_WEBHOOK_LOG_OPTION, [] );
+    add_option( MANCAMP_OFFLINE_SWEEP_STATUS_OPTION, [
+        'last_run' => '',
+        'processed_count' => 0,
+    ] );
     mancamp_schedule_retry_event();
+    mancamp_schedule_offline_sweep_event();
 }
 
 register_deactivation_hook( __FILE__, 'mancamp_deactivate' );
@@ -1313,4 +1809,5 @@ register_deactivation_hook( __FILE__, 'mancamp_deactivate' );
 function mancamp_deactivate() {
     // Options and transients preserved intentionally for re-activation
     wp_clear_scheduled_hook( MANCAMP_RETRY_HOOK );
+    wp_clear_scheduled_hook( MANCAMP_OFFLINE_SWEEP_HOOK );
 }

@@ -54,6 +54,12 @@
   const RETRY_LIMIT = 40;
   const RETRY_DELAY_MS = 250;
 
+  // When true, setFieldValue writes values silently (no events dispatched).
+  // Set during the final sync inside handleFormSubmit so Fluent Forms' own
+  // change/input listeners never see our internal field updates and don't
+  // reset their submission state machine mid-submit.
+  let _isSyncing = false;
+
   function roundCurrency(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
   }
@@ -553,8 +559,10 @@
         if (hiddenField) {
           if (hiddenField.value !== state.paymentMethod) {
             hiddenField.value = state.paymentMethod;
-            hiddenField.dispatchEvent(new Event('input', { bubbles: true }));
-            hiddenField.dispatchEvent(new Event('change', { bubbles: true }));
+            if (!_isSyncing) {
+              hiddenField.dispatchEvent(new Event('input', { bubbles: true }));
+              hiddenField.dispatchEvent(new Event('change', { bubbles: true }));
+            }
           }
         } else {
           // Create a dedicated hidden output field so the payload always has it
@@ -1110,7 +1118,12 @@
         return;
       }
 
-      syncHiddenFields();
+      _isSyncing = true;
+      try {
+        syncHiddenFields();
+      } finally {
+        _isSyncing = false;
+      }
     }
 
     Object.values(primaryFields).forEach((field) => {
@@ -1135,6 +1148,7 @@
     // We can't rely on knowing Fluent Forms' exact field name for the payment
     // method selector, so we re-resolve on any change that could affect it.
     form.addEventListener('change', (event) => {
+      if (_isSyncing) return;
       const target = event.target;
       if (!target) return;
       // Always re-render on payment-named fields
@@ -1191,8 +1205,10 @@
         const shouldCheck = radio.value === value;
         if (shouldCheck && !radio.checked) {
           radio.checked = true;
-          radio.dispatchEvent(new Event('input', { bubbles: true }));
-          radio.dispatchEvent(new Event('change', { bubbles: true }));
+          if (!_isSyncing) {
+            radio.dispatchEvent(new Event('input', { bubbles: true }));
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
         if (shouldCheck) matched = true;
       });
@@ -1201,8 +1217,10 @@
 
     if (field.value === value) return true;
     field.value = value;
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-    field.dispatchEvent(new Event('change', { bubbles: true }));
+    if (!_isSyncing) {
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    }
     return true;
   }
 

@@ -1130,13 +1130,22 @@
       if (!field) return;
       field.addEventListener('input', () => {
         if (field === primaryFields.age) {
+          // Age changes the guardian selector visibility — full re-render needed.
           const primaryAge = parseAge(field.value);
           if (primaryAge !== null && primaryAge < 18 && !Number.isInteger(state.primaryExtras.guardianIndex)) {
             state.primaryExtras.guardianIndex = defaultGuardianIndexForChild(allPeopleRaw());
           }
+          validatePrimary();
+          render();
+        } else {
+          // For name/email/phone: update state and hidden fields without a full
+          // re-render on each keystroke. Re-render fires on 'change' (blur).
+          validatePrimary();
+          syncHiddenFields();
+          injectExternalError(primaryFields.first_name, state.externalErrors.first_name || '', 'first_name');
+          injectExternalError(primaryFields.last_name, state.externalErrors.last_name || '', 'last_name');
+          injectExternalError(primaryFields.age, state.externalErrors.age || '', 'age');
         }
-        validatePrimary();
-        render();
       });
       field.addEventListener('change', () => {
         validatePrimary();

@@ -315,8 +315,6 @@ function mancamp_maybe_send_offline_on_submit( $insertId, $formData, $form ) {
         return;
     }
 
-    sleep( 3 );
-
     mancamp_process_entry_webhook( $entry_id, [
         'submission' => $submission,
         'payment'    => mancamp_get_payment_record( $entry_id ),
@@ -1049,7 +1047,7 @@ function mancamp_sweep_offline_submissions() {
     try {
         $submissions = wpFluent()->table( 'fluentform_submissions' )
             ->where( 'form_id', mancamp_form_id() )
-            ->where( 'created_at', '>=', date( 'Y-m-d H:i:s', strtotime( '-48 hours' ) ) )
+            ->where( 'created_at', '>=', wp_date( 'Y-m-d H:i:s', time() - 48 * HOUR_IN_SECONDS ) )
             ->get();
     } catch ( Exception $e ) {
         mancamp_log_event( 0, 'failed', 'Offline sweep query failed: ' . $e->getMessage() );

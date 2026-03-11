@@ -624,7 +624,13 @@
       const adultsForPrimary = adultsForGuardians(rawPeople, 0);
       const primaryAge = parseAge(rawPeople[0].age);
       const draftAge = parseAge(state.draft.age);
-      const synced = syncHiddenFields();
+      _isSyncing = true;
+      let synced;
+      try {
+        synced = syncHiddenFields();
+      } finally {
+        _isSyncing = false;
+      }
       const people = synced.people;
       const totals = synced.totals;
       const primaryShirts = getEffectiveShirtInventory(state.shirtInventory, rawPeople, 0);
@@ -1069,7 +1075,12 @@
       const isTextLike = target.tagName === 'INPUT' &&
         (target.type === 'text' || target.type === 'number' || target.type === '' || !target.type);
       if (event.type === 'input' && isTextLike) {
-        syncHiddenFields();
+        _isSyncing = true;
+        try {
+          syncHiddenFields();
+        } finally {
+          _isSyncing = false;
+        }
         return;
       }
 
@@ -1102,7 +1113,11 @@
       }
     }
 
-    function handleFormSubmit(event) {
+    function handleSubmitClick(event) {
+      // Only intercept actual submit/next buttons, not arbitrary clicks.
+      const btn = event.target.closest('[type="submit"], .ff-btn-submit, .ff-btn-next, button[class*="submit"]');
+      if (!btn) return;
+
       state.rosterError = '';
       const primaryValid = validatePrimary();
       const people = serializePeople();
@@ -1113,11 +1128,15 @@
       }
 
       if (!primaryValid || invalidGuardian) {
+        // Stop here — Fluent Forms' click handler (and reCaptcha invocation) never run.
         event.preventDefault();
+        event.stopImmediatePropagation();
         render();
         return;
       }
 
+      // Validation passed: do the final sync silently, then let the click
+      // propagate so Fluent Forms handles reCaptcha and submission normally.
       _isSyncing = true;
       try {
         syncHiddenFields();
@@ -1141,7 +1160,12 @@
           // For name/email/phone: update state and hidden fields without a full
           // re-render on each keystroke. Re-render fires on 'change' (blur).
           validatePrimary();
-          syncHiddenFields();
+          _isSyncing = true;
+          try {
+            syncHiddenFields();
+          } finally {
+            _isSyncing = false;
+          }
           injectExternalError(primaryFields.first_name, state.externalErrors.first_name || '', 'first_name');
           injectExternalError(primaryFields.last_name, state.externalErrors.last_name || '', 'last_name');
           injectExternalError(primaryFields.age, state.externalErrors.age || '', 'age');
@@ -1177,7 +1201,9 @@
       }
     });
 
-    form.addEventListener('submit', handleFormSubmit, true);
+    // Intercept at click rather than submit so Fluent Forms' reCaptcha token
+    // is never invoked on a validation failure (matching camporee-roster pattern).
+    form.addEventListener('click', handleSubmitClick, true);
 
     container.dataset.mcInitialized = 'true';
     container.setAttribute('data-mancamp-builder-ready', 'true');

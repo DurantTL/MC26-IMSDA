@@ -99,4 +99,4 @@ For detailed setup, see [docs/SETUP.md](/Users/calebdurant/Downloads/MANCAMP-IMS
 - Use the admin sidebar as the primary operational interface.
 - Use `Generate ALL Reports` after significant manual lodging edits if staff want refreshed reporting sheets immediately.
 - Waitlisted or manual-review attendees should not be checked in until staff resolve lodging.
-- PDF export now produces attendee registration summaries, not camporee club packets.
+- PDF export produces attendee registration summaries.

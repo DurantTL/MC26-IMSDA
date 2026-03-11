@@ -1202,7 +1202,7 @@
     });
 
     // Intercept at click rather than submit so Fluent Forms' reCaptcha token
-    // is never invoked on a validation failure (matching camporee-roster pattern).
+    // is never invoked on a validation failure.
     form.addEventListener('click', handleSubmitClick, true);
 
     container.dataset.mcInitialized = 'true';

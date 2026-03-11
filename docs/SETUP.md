@@ -148,7 +148,7 @@ Configure:
 - registration page slug
 - debug mode
 
-Replace the old camporee-era field map with the current Man Camp field contract documented in [docs/MAN-CAMP-FORM-FIELDS.md](/Users/calebdurant/Downloads/MANCAMP-IMSDA/docs/MAN-CAMP-FORM-FIELDS.md).
+Replace any legacy field map with the current Man Camp field contract documented in [docs/MAN-CAMP-FORM-FIELDS.md](/Users/calebdurant/Downloads/MANCAMP-IMSDA/docs/MAN-CAMP-FORM-FIELDS.md).
 
 ### 2.3 Fluent Forms Configuration
 
@@ -209,7 +209,7 @@ From the Google Sheet menu:
 
 Batch generation checkpoints progress in PropertiesService. If the 6-minute timeout fires mid-batch, the next trigger run picks up where it left off. Use **View PDF Generation Status** to check progress and **Cancel PDF Generation** to abort.
 
-The PDF is now an attendee/registration summary, not a camporee-style club packet. See [docs/MAN-CAMP-REPORTS.md](/Users/calebdurant/Downloads/MANCAMP-IMSDA/docs/MAN-CAMP-REPORTS.md).
+The PDF is an attendee/registration summary. See [docs/MAN-CAMP-REPORTS.md](/Users/calebdurant/Downloads/MANCAMP-IMSDA/docs/MAN-CAMP-REPORTS.md).
 
 ---
 

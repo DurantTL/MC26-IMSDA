@@ -54,6 +54,12 @@
   const RETRY_LIMIT = 40;
   const RETRY_DELAY_MS = 250;
 
+  // When true, setFieldValue writes values silently (no events dispatched).
+  // Set during the final sync inside handleFormSubmit so Fluent Forms' own
+  // change/input listeners never see our internal field updates and don't
+  // reset their submission state machine mid-submit.
+  let _isSyncing = false;
+
   function roundCurrency(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
   }
@@ -553,8 +559,10 @@
         if (hiddenField) {
           if (hiddenField.value !== state.paymentMethod) {
             hiddenField.value = state.paymentMethod;
-            hiddenField.dispatchEvent(new Event('input', { bubbles: true }));
-            hiddenField.dispatchEvent(new Event('change', { bubbles: true }));
+            if (!_isSyncing) {
+              hiddenField.dispatchEvent(new Event('input', { bubbles: true }));
+              hiddenField.dispatchEvent(new Event('change', { bubbles: true }));
+            }
           }
         } else {
           // Create a dedicated hidden output field so the payload always has it
@@ -1110,20 +1118,34 @@
         return;
       }
 
-      syncHiddenFields();
+      _isSyncing = true;
+      try {
+        syncHiddenFields();
+      } finally {
+        _isSyncing = false;
+      }
     }
 
     Object.values(primaryFields).forEach((field) => {
       if (!field) return;
       field.addEventListener('input', () => {
         if (field === primaryFields.age) {
+          // Age changes the guardian selector visibility — full re-render needed.
           const primaryAge = parseAge(field.value);
           if (primaryAge !== null && primaryAge < 18 && !Number.isInteger(state.primaryExtras.guardianIndex)) {
             state.primaryExtras.guardianIndex = defaultGuardianIndexForChild(allPeopleRaw());
           }
+          validatePrimary();
+          render();
+        } else {
+          // For name/email/phone: update state and hidden fields without a full
+          // re-render on each keystroke. Re-render fires on 'change' (blur).
+          validatePrimary();
+          syncHiddenFields();
+          injectExternalError(primaryFields.first_name, state.externalErrors.first_name || '', 'first_name');
+          injectExternalError(primaryFields.last_name, state.externalErrors.last_name || '', 'last_name');
+          injectExternalError(primaryFields.age, state.externalErrors.age || '', 'age');
         }
-        validatePrimary();
-        render();
       });
       field.addEventListener('change', () => {
         validatePrimary();
@@ -1135,6 +1157,7 @@
     // We can't rely on knowing Fluent Forms' exact field name for the payment
     // method selector, so we re-resolve on any change that could affect it.
     form.addEventListener('change', (event) => {
+      if (_isSyncing) return;
       const target = event.target;
       if (!target) return;
       // Always re-render on payment-named fields
@@ -1191,8 +1214,10 @@
         const shouldCheck = radio.value === value;
         if (shouldCheck && !radio.checked) {
           radio.checked = true;
-          radio.dispatchEvent(new Event('input', { bubbles: true }));
-          radio.dispatchEvent(new Event('change', { bubbles: true }));
+          if (!_isSyncing) {
+            radio.dispatchEvent(new Event('input', { bubbles: true }));
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
         if (shouldCheck) matched = true;
       });
@@ -1201,8 +1226,10 @@
 
     if (field.value === value) return true;
     field.value = value;
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-    field.dispatchEvent(new Event('change', { bubbles: true }));
+    if (!_isSyncing) {
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    }
     return true;
   }
 

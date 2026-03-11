@@ -624,7 +624,13 @@
       const adultsForPrimary = adultsForGuardians(rawPeople, 0);
       const primaryAge = parseAge(rawPeople[0].age);
       const draftAge = parseAge(state.draft.age);
-      const synced = syncHiddenFields();
+      _isSyncing = true;
+      let synced;
+      try {
+        synced = syncHiddenFields();
+      } finally {
+        _isSyncing = false;
+      }
       const people = synced.people;
       const totals = synced.totals;
       const primaryShirts = getEffectiveShirtInventory(state.shirtInventory, rawPeople, 0);
@@ -1069,7 +1075,12 @@
       const isTextLike = target.tagName === 'INPUT' &&
         (target.type === 'text' || target.type === 'number' || target.type === '' || !target.type);
       if (event.type === 'input' && isTextLike) {
-        syncHiddenFields();
+        _isSyncing = true;
+        try {
+          syncHiddenFields();
+        } finally {
+          _isSyncing = false;
+        }
         return;
       }
 
@@ -1141,7 +1152,12 @@
           // For name/email/phone: update state and hidden fields without a full
           // re-render on each keystroke. Re-render fires on 'change' (blur).
           validatePrimary();
-          syncHiddenFields();
+          _isSyncing = true;
+          try {
+            syncHiddenFields();
+          } finally {
+            _isSyncing = false;
+          }
           injectExternalError(primaryFields.first_name, state.externalErrors.first_name || '', 'first_name');
           injectExternalError(primaryFields.last_name, state.externalErrors.last_name || '', 'last_name');
           injectExternalError(primaryFields.age, state.externalErrors.age || '', 'age');

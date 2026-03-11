@@ -16,12 +16,12 @@ These reports are generated from the current `Registrations`, `Roster`, `Lodging
 
 ## What Was Removed or Deprecated
 
-The following camporee-era report behaviors were intentionally removed from the active reporting flow:
+The following legacy report behaviors were intentionally removed from the active reporting flow:
 
 - club-by-club dashboard organized around Pathfinder/TLT/staff roles
 - camping coordinator summary based on tents, trailers, canopy size, square footage, and `camp_next_to`
-- camporee duty/activity preference reporting
-- fake camporee test-report generator data
+- duty/activity preference reporting
+- legacy test-report generator data
 
 The old entry-point function names still exist where needed for compatibility:
 
@@ -46,7 +46,7 @@ Dropped from PDFs:
 - duty preferences
 - special activities
 - campsite logistics blocks
-- camporee program-specific sections
+- program-specific sections (no longer applicable)
 
 ## Intentional Compatibility Gaps
 
@@ -62,5 +62,5 @@ Those columns are no longer the source of truth for reports.
 ## Operator Notes
 
 - Use `Generate ALL Reports` after manual lodging edits if you want the summary sheets refreshed immediately.
-- Use the PDF menu only for attendee/registration summaries; it is no longer a camporee-style club packet export.
-- If you still need a legacy camporee report for archive reasons, keep an older export outside this repo. The active code no longer regenerates those outputs.
+- Use the PDF menu only for attendee/registration summaries; it does not generate club packet exports.
+- If you still need a legacy report for archive reasons, keep an older export outside this repo. The active code no longer regenerates those outputs.

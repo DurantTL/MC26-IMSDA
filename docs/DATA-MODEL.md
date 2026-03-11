@@ -361,7 +361,7 @@ These fields mirror roster check-in state for auditability:
 - `registrant_name`
 - `total_pathfinders`
 - `total_tlt`
-- camporee duty/activity fields
+- legacy duty/activity fields
 - camping logistics fields like `tents`, `camp_next_to`
 
 ### Canonical going forward

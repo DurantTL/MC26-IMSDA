@@ -121,6 +121,7 @@ function normalizeConfirmationEmailData_(data) {
       age: person.age || '',
       ageGroup: ageGroup,
       isGuardian: isGuardian,
+      isVolunteer: String(person.volunteer || person.isVolunteer || '').toLowerCase() === 'yes',
       guardianLinkKey: guardianLinkKey,
       guardianRegistrationId: guardianRegistrationId,
       ownLinkKey: ownLinkKey,
@@ -208,10 +209,11 @@ function buildConfirmationEmailHtml_(data) {
   const optionPriceNum = typeof data.costBreakdown.optionPrice === 'number' && data.costBreakdown.optionPrice > 0
     ? data.costBreakdown.optionPrice : 0;
   const sabbathEmailPrice = 70;
-  const sabbathAttendees = people.filter(function(p) { return p.lodgingPreference === 'sabbath_attendance_only'; });
-  const overnightAttendees = people.filter(function(p) { return p.lodgingPreference !== 'sabbath_attendance_only'; });
+  const sabbathAttendees = people.filter(function(p) { return p.lodgingPreference === 'sabbath_attendance_only' && !p.isVolunteer; });
+  const overnightAttendees = people.filter(function(p) { return p.lodgingPreference !== 'sabbath_attendance_only' && !p.isVolunteer; });
   // Compute total from displayed line items so it always matches the rows above it,
   // regardless of what per-person price may be stored in the sheet.
+  // Volunteers are excluded from cost — they attend at no charge.
   const lineItemTotal = (optionPriceNum > 0 && overnightAttendees.length > 0 ? optionPriceNum * overnightAttendees.length : 0) +
     (sabbathAttendees.length > 0 ? sabbathEmailPrice * sabbathAttendees.length : 0);
   const estimatedTotal = lineItemTotal > 0 ? formatCurrency_(lineItemTotal) : (estimatedTotalNum > 0 ? formatCurrency_(estimatedTotalNum) : '');
@@ -439,7 +441,8 @@ function buildEmailPersonMeta_(person) {
     person.id,
     person.age !== '' ? 'Age ' + person.age : '',
     person.ageGroup === 'child' ? 'Child' : 'Adult',
-    person.isGuardian ? 'Guardian' : ''
+    person.isGuardian ? 'Guardian' : '',
+    person.isVolunteer ? 'Volunteer' : ''
   ].filter(Boolean).join(' • ');
 }
 

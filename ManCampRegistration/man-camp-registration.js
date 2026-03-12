@@ -486,10 +486,14 @@
       });
 
       const roundedBase = roundCurrency(baseTotal);
-      const processingFee = paymentMethod === 'square' && roundedBase > 0
-        ? roundCurrency((roundedBase * SQUARE_FEE_RATE) + SQUARE_FEE_FIXED)
-        : 0;
-      const customPaymentAmount = roundCurrency(roundedBase + processingFee);
+      // Gross-up formula: fee must cover itself since Square charges on the
+      // total collected (baseTotal + fee), not just the baseTotal.
+      // customPaymentAmount = (baseTotal + fixed) / (1 - rate)
+      // ensures: customPaymentAmount * rate + fixed == processingFee exactly.
+      const customPaymentAmount = paymentMethod === 'square' && roundedBase > 0
+        ? roundCurrency((roundedBase + SQUARE_FEE_FIXED) / (1 - SQUARE_FEE_RATE))
+        : roundedBase;
+      const processingFee = roundCurrency(customPaymentAmount - roundedBase);
 
       return {
         baseTotal: roundedBase,

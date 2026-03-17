@@ -1117,6 +1117,50 @@
       }
     }
 
+    function showPaymentOverlay() {
+      var overlay = document.createElement('div');
+      overlay.id = 'mc-payment-overlay';
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(18,52,77,0.92);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;';
+
+      var spinner = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      spinner.setAttribute('width', '56');
+      spinner.setAttribute('height', '56');
+      spinner.setAttribute('viewBox', '0 0 56 56');
+      spinner.style.cssText = 'margin-bottom:24px;';
+      spinner.innerHTML = '<circle cx="28" cy="28" r="22" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="5"/><circle cx="28" cy="28" r="22" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-dasharray="100 38" transform-origin="28 28"><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.9s" repeatCount="indefinite"/></circle>';
+
+      var primary = document.createElement('p');
+      primary.setAttribute('data-mc-status', '');
+      primary.style.cssText = 'color:#ffffff;font-size:18px;font-weight:600;margin:0 0 10px;text-align:center;';
+      primary.textContent = 'Securely processing your payment\u2026';
+
+      var secondary = document.createElement('p');
+      secondary.style.cssText = 'color:rgba(255,255,255,0.7);font-size:14px;margin:0;text-align:center;';
+      secondary.textContent = 'Please don\u2019t close this page.';
+
+      overlay.appendChild(spinner);
+      overlay.appendChild(primary);
+      overlay.appendChild(secondary);
+      document.body.appendChild(overlay);
+    }
+
+    function startOverlayMessageCycle() {
+      var messages = [
+        'Securely processing your payment\u2026',
+        'Confirming your registration\u2026',
+        'Reserving your lodging spot\u2026',
+        'Almost done \u2014 saving your details\u2026'
+      ];
+      var index = 0;
+      setInterval(function () {
+        index = (index + 1) % messages.length;
+        var el = document.querySelector('[data-mc-status]');
+        if (el) {
+          el.textContent = messages[index];
+        }
+      }, 3000);
+    }
+
     function handleSubmitClick(event) {
       // Only intercept actual submit/next buttons, not arbitrary clicks.
       const btn = event.target.closest('[type="submit"], .ff-btn-submit, .ff-btn-next, button[class*="submit"]');
@@ -1147,6 +1191,8 @@
       } finally {
         _isSyncing = false;
       }
+      showPaymentOverlay();
+      startOverlayMessageCycle();
     }
 
     Object.values(primaryFields).forEach((field) => {

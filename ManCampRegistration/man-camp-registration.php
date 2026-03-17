@@ -311,7 +311,13 @@ function mancamp_maybe_send_offline_on_submit( $insertId, $formData, $form ) {
         'created_at' => current_time( 'mysql' ),
     ];
 
-    if ( ! mancamp_is_offline_submission( $submission ) ) {
+    // An empty payment method means Square hasn't written its token back yet; this is not an offline submission.
+    $raw_pay_type = mancamp_pick_field( $formData, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], '' );
+    if ( $raw_pay_type === '' ) {
+        return;
+    }
+
+    if ( mancamp_normalise_pay_type( $raw_pay_type ) !== 'offline' ) {
         return;
     }
 

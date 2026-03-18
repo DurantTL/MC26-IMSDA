@@ -188,11 +188,12 @@ function setupSheets() {
   setupLodgingAssignmentsSheet_(ss);
   setupShirtInventorySheet_(ss);
   setupEmailLogSheet_(ss);
+  setupRoommateAssignmentsSheet_(ss);
 
   SpreadsheetApp.getUi().alert(
     '✅ All sheets created and formatted.\n\n' +
     'Next step: deploy this script as a Web App and paste the URL into the WordPress plugin settings.\n\n' +
-    'Sheets created/updated: RAW, Registrations, Roster, CampingGroups, Assignments, LodgingInventory, LodgingAssignments, ShirtInventory, EmailLog.'
+    'Sheets created/updated: RAW, Registrations, Roster, CampingGroups, Assignments, LodgingInventory, LodgingAssignments, ShirtInventory, EmailLog, RoommateAssignments.'
   );
 }
 
@@ -254,6 +255,12 @@ function setupShirtInventorySheet_(ss) {
   if (!sheet) sheet = ss.insertSheet(CONFIG.sheets.shirtInventory);
   ensureSheetHeaders_(sheet, getShirtInventoryHeaders_());
   seedShirtInventorySheet_(sheet);
+}
+
+function setupRoommateAssignmentsSheet_(ss) {
+  let sheet = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+  if (!sheet) sheet = ss.insertSheet(CONFIG.sheets.roommateAssignments);
+  ensureSheetHeaders_(sheet, getRoommateAssignmentsHeaders_());
 }
 
 /**
@@ -349,7 +356,9 @@ function getRegistrationsHeaders_() {
     'age_num','pay_type','rv_amp','rv_length','attendees_json','registration_total',
     'processing_fee','custom_payment_amount','volunteer_count',
     // Phase 5 registration-level check-in rollup fields
-    'check_in_status','check_in_timestamp'
+    'check_in_status','check_in_timestamp',
+    // Roommate request fields
+    'roommate_request_text','roommate_matched_id','roommate_match_status'
   ];
 }
 
@@ -415,6 +424,14 @@ function getShirtInventoryHeaders_() {
   return [
     'shirt_size','starting_inventory','assigned_count','remaining_inventory',
     'sold_out','last_recalculated_at','notes'
+  ];
+}
+
+function getRoommateAssignmentsHeaders_() {
+  return [
+    'registration_id','entry_id','registrant_name','registrant_email',
+    'request_text','matched_registration_id','matched_registrant_name',
+    'match_status','override_by_admin','created_at','updated_at'
   ];
 }
 

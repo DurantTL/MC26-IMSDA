@@ -95,6 +95,9 @@ function processRegistration(data) {
   // --- 8. Write to Registrations sheet ---
   writeRegistrationRow_(ss, assigned);
 
+  // --- 8.5. Write roommate assignment row (idempotent, skipped when matchStatus = 'none') ---
+  writeRoommateAssignmentsRow_(ss, assigned);
+
   // --- 9. Write attendees to Roster sheet ---
   writeRosterRows_(ss, assigned);
 
@@ -302,7 +305,10 @@ function writeRegistrationRow_(ss, data) {
       lodging_preference: data.lodgingPreference,
       lodging_status: data.lodgingStatus,
       created_at: data.createdAt || data.timestamp
-    })
+    }),
+    roommate_request_text:    (data.roommateRequest && data.roommateRequest.requestText)           ? data.roommateRequest.requestText           : '',
+    roommate_matched_id:      (data.roommateRequest && data.roommateRequest.matchedRegistrationId) ? data.roommateRequest.matchedRegistrationId : '',
+    roommate_match_status:    (data.roommateRequest && data.roommateRequest.matchStatus)           ? data.roommateRequest.matchStatus           : 'none'
   });
 }
 
@@ -428,6 +434,89 @@ function writeAssignmentsRow_(ss, data) {
   });
 }
 
+/**
+ * Writes or updates a row in the RoommateAssignments sheet.
+ * Idempotent: if a row with the same entry_id already exists, it is
+ * updated in place rather than appended a second time.
+ * No-ops silently when roommateRequest is absent or matchStatus is 'none'.
+ *
+ * @param {Spreadsheet} ss
+ * @param {Object}      data — normalized registration object (post-assignment)
+ */
+function writeRoommateAssignmentsRow_(ss, data) {
+  try {
+    const rr = data.roommateRequest;
+    if (!rr || rr.matchStatus === 'none' || !rr.matchStatus) return;
+
+    const sheet = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+    if (!sheet) {
+      Logger.log('writeRoommateAssignmentsRow_: RoommateAssignments sheet not found — skipping.');
+      return;
+    }
+
+    // Ensure sheet headers exist before writing
+    ensureSheetHeaders_(sheet, getRoommateAssignmentsHeaders_());
+
+    const entryId = String(data.fluentFormEntryId || '');
+    const now     = new Date();
+
+    // Look up matched_registrant_name from Registrations sheet if a match ID is provided
+    let matchedName = '';
+    if (rr.matchedRegistrationId) {
+      const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+      if (regSheet && regSheet.getLastRow() > 1) {
+        const entryIdColNum = getColumnNumber_(regSheet, 'fluent_form_entry_id');
+        const nameColNum    = getColumnNumber_(regSheet, 'registrant_name');
+        if (entryIdColNum > 0 && nameColNum > 0) {
+          const lastRow    = regSheet.getLastRow();
+          const entryIds   = regSheet.getRange(2, entryIdColNum, lastRow - 1, 1).getValues().flat();
+          const matchIndex = entryIds.indexOf(String(rr.matchedRegistrationId));
+          if (matchIndex >= 0) {
+            matchedName = String(regSheet.getRange(matchIndex + 2, nameColNum).getValue() || '');
+          }
+        }
+      }
+    }
+
+    const rowObj = {
+      registration_id:          data.registrationId || '',
+      entry_id:                 entryId,
+      registrant_name:          data.registrantName || '',
+      registrant_email:         data.registrantEmail || '',
+      request_text:             rr.requestText || '',
+      matched_registration_id:  rr.matchedRegistrationId || '',
+      matched_registrant_name:  matchedName,
+      match_status:             rr.matchStatus || '',
+      override_by_admin:        false,
+      created_at:               now,
+      updated_at:               now
+    };
+
+    // Check for an existing row with this entry_id to enforce idempotency
+    if (entryId && sheet.getLastRow() > 1) {
+      const entryIdColNum = getColumnNumber_(sheet, 'entry_id');
+      if (entryIdColNum > 0) {
+        const lastRow  = sheet.getLastRow();
+        const existing = sheet.getRange(2, entryIdColNum, lastRow - 1, 1).getValues().flat();
+        const rowIndex = existing.indexOf(entryId);
+        if (rowIndex >= 0) {
+          // Update existing row — preserve override_by_admin value
+          const existingRow = readRowAsObject_(sheet, rowIndex + 2);
+          rowObj.created_at = existingRow['created_at'] || now;
+          rowObj.override_by_admin = existingRow['override_by_admin'] !== undefined ? existingRow['override_by_admin'] : false;
+          updateRowFromObject_(sheet, rowIndex + 2, rowObj);
+          return;
+        }
+      }
+    }
+
+    appendRowFromObject_(sheet, rowObj);
+  } catch (err) {
+    // Non-fatal — log but do not block the main registration flow
+    Logger.log('writeRoommateAssignmentsRow_: error (non-fatal): ' + err.toString());
+  }
+}
+
 function normalizeRegistrationSubmission_(data) {
   const peopleInput = parsePeopleInput_(data);
   if (!peopleInput || peopleInput.length === 0) {
@@ -524,7 +613,27 @@ function normalizeRegistrationSubmission_(data) {
     primaryContact: {
       name:  primary.fullName,
       email: primary.email
-    }
+    },
+    roommateRequest: normalizeRoommateRequest_(data.roommateRequest || null)
+  };
+}
+
+/**
+ * Safely extracts and normalizes the roommateRequest payload block.
+ * Defaults all fields to empty/none if the block is absent (e.g. legacy resyncs).
+ *
+ * @param  {Object|null} raw — roommateRequest object from payload, or null
+ * @returns {Object}         { requestText, matchedRegistrationId, matchStatus }
+ */
+function normalizeRoommateRequest_(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { requestText: '', matchedRegistrationId: '', matchStatus: 'none' };
+  }
+  const status = String(raw.matchStatus || '').trim().toLowerCase();
+  return {
+    requestText:           String(raw.requestText || '').trim(),
+    matchedRegistrationId: String(raw.matchedRegistrationId || '').trim(),
+    matchStatus:           ['none', 'requested', 'matched'].includes(status) ? status : 'none'
   };
 }
 

@@ -21,6 +21,7 @@
 //   adminFindDuplicates()                     — find duplicate registrations
 //   adminPanelUpdateEstimatedTotal(regId, newTotal) — override total cost
 //   adminPanelRevokeMealDiscount(regId)       — set meal count to 0 and recalc
+//   adminPanelGetRoommateRequests()           — roommate requests for sidebar view
 // ============================================================
 
 
@@ -1232,5 +1233,54 @@ function adminPanelRevokeMealDiscount(registrationId) {
     };
   } catch (e) {
     return { success: false, message: 'Error: ' + e.message };
+  }
+}
+
+
+// ============================================================
+// ROOMMATE REQUESTS
+// ============================================================
+
+/**
+ * Returns all rows from RoommateAssignments where match_status is
+ * 'requested' or 'matched', plus summary counts.
+ * Called via google.script.run from AdminSidebar.html.
+ *
+ * @returns {Object} { rows, total, matched, unmatched }
+ */
+function adminPanelGetRoommateRequests() {
+  try {
+    const ss    = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+    if (!sheet || sheet.getLastRow() < 2) {
+      return { rows: [], total: 0, matched: 0, unmatched: 0 };
+    }
+
+    const allRows = readSheetObjects_(sheet);
+    const active  = allRows.filter(function(r) {
+      const status = String(r.match_status || '').toLowerCase();
+      return status === 'requested' || status === 'matched';
+    });
+
+    const matched   = active.filter(function(r) { return String(r.match_status || '').toLowerCase() === 'matched'; }).length;
+    const unmatched = active.filter(function(r) { return String(r.match_status || '').toLowerCase() === 'requested'; }).length;
+
+    const rows = active.map(function(r) {
+      return {
+        registrationId:        String(r.registration_id || ''),
+        entryId:               String(r.entry_id || ''),
+        registrantName:        String(r.registrant_name || ''),
+        registrantEmail:       String(r.registrant_email || ''),
+        requestText:           String(r.request_text || ''),
+        matchedRegistrationId: String(r.matched_registration_id || ''),
+        matchedRegistrantName: String(r.matched_registrant_name || ''),
+        matchStatus:           String(r.match_status || ''),
+        overrideByAdmin:       r.override_by_admin || false
+      };
+    });
+
+    return { rows: rows, total: active.length, matched: matched, unmatched: unmatched };
+  } catch (e) {
+    return { error: e.message, rows: [], total: 0, matched: 0, unmatched: 0 };
   }
 }

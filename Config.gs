@@ -42,7 +42,8 @@ const CONFIG = {
     lodgingInventory: 'LodgingInventory',
     lodgingAssignments: 'LodgingAssignments',
     shirtInventory: 'ShirtInventory',
-    emailLog: 'EmailLog'
+    emailLog: 'EmailLog',
+    roommateAssignments: 'RoommateAssignments'
   },
 
   email: {

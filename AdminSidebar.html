@@ -229,6 +229,7 @@
           <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminValidateDataIntegrity')">Validate Data Integrity</button>
           <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminFindDuplicates')">Find Duplicates</button>
           <button class="btn btn-primary btn-full" onclick="openQueuePanel()">Open Lodging Queue</button>
+          <button class="btn btn-primary btn-full" onclick="openRoommatePanel()">Open Roommate Requests</button>
           <div id="toolStatus" class="status"></div>
         </div>
       </div>
@@ -335,6 +336,21 @@
         </div>
       </div>
     </div>
+
+    <div id="panelRoommates" class="panel">
+      <div class="card">
+        <div class="card-header">
+          <a class="back-btn" onclick="showPanel('search')">← Back to Search</a>
+          <div class="card-title">Roommate Requests</div>
+          <div class="card-sub">Registrations with accommodation requests</div>
+        </div>
+        <div class="card-body">
+          <div id="roommateStats"></div>
+          <div id="roommateList"></div>
+          <div id="roommateStatus" class="status"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="confirmOverlay" class="overlay">
@@ -355,7 +371,7 @@
     var currentRegistration = null;
     var pendingAction = null;
     var pendingArg = null;
-    var PANELS = ['panelSearch', 'panelDetails', 'panelAddAttendee', 'panelRemoveAttendee', 'panelAssignments'];
+    var PANELS = ['panelSearch', 'panelDetails', 'panelAddAttendee', 'panelRemoveAttendee', 'panelAssignments', 'panelRoommates'];
 
     document.getElementById('searchInput').addEventListener('keydown', function(event) {
       if (event.key === 'Enter') doSearch();
@@ -367,7 +383,8 @@
         details: 'panelDetails',
         addAttendee: 'panelAddAttendee',
         removeAttendee: 'panelRemoveAttendee',
-        assignments: 'panelAssignments'
+        assignments: 'panelAssignments',
+        roommates: 'panelRoommates'
       };
       PANELS.forEach(function(id) {
         var el = document.getElementById(id);
@@ -927,6 +944,65 @@
           '</div>';
       });
       document.getElementById('queueList').innerHTML = html + '</div>';
+    }
+
+    function openRoommatePanel() {
+      showPanel('roommates');
+      loadRoommateRequests();
+    }
+
+    function loadRoommateRequests() {
+      document.getElementById('roommateList').innerHTML = '<div class="empty">Loading…</div>';
+      google.script.run
+        .withSuccessHandler(function(data) {
+          if (data.error) return setStatus('roommateStatus', 'error', data.error);
+          renderRoommateRequests(data);
+        })
+        .withFailureHandler(function(err) {
+          setStatus('roommateStatus', 'error', 'Error: ' + err.message);
+        })
+        .adminPanelGetRoommateRequests();
+    }
+
+    function renderRoommateRequests(data) {
+      var rows = data.rows || [];
+      var total = data.total || 0;
+      var matched = data.matched || 0;
+      var unmatched = data.unmatched || 0;
+
+      document.getElementById('roommateStats').innerHTML =
+        '<div class="stats-grid">' +
+          statBox(total, 'Total Requests') +
+          statBox(matched, 'Matched') +
+          statBox(unmatched, 'Unmatched') +
+          statBox(total - matched - unmatched, 'Other') +
+        '</div>';
+
+      if (!rows.length) {
+        document.getElementById('roommateList').innerHTML = '<div class="empty">No roommate requests on file.</div>';
+        return;
+      }
+
+      var html = '<div class="roster-list">';
+      rows.forEach(function(item) {
+        var isUnmatched = String(item.matchStatus || '').toLowerCase() === 'requested';
+        var isMatched   = String(item.matchStatus || '').toLowerCase() === 'matched';
+        var icon = isUnmatched ? '⚠️' : (isMatched ? '✅' : '');
+        var statusClass = isUnmatched ? 'pill-warn' : (isMatched ? 'pill-ok' : 'pill-info');
+        var statusLabel = isUnmatched ? 'Unmatched' : (isMatched ? 'Matched' : esc(item.matchStatus || ''));
+
+        html += '<div class="queue-item">' +
+          '<div class="result-label">' + icon + ' ' + esc(item.registrantName || item.registrationId) +
+            '<span class="pill ' + statusClass + '">' + statusLabel + '</span>' +
+          '</div>' +
+          '<div class="result-sub" style="margin-top:4px;font-style:italic;">&ldquo;' + esc(item.requestText) + '&rdquo;</div>' +
+          (item.matchedRegistrantName
+            ? '<div class="tiny" style="margin-top:2px;">Matched to: ' + esc(item.matchedRegistrantName) + '</div>'
+            : '') +
+          '<button class="btn btn-secondary btn-full" style="margin-top:6px" onclick="loadRegistrationDetails(\'' + esc(item.registrationId) + '\')">Open Registration</button>' +
+          '</div>';
+      });
+      document.getElementById('roommateList').innerHTML = html + '</div>';
     }
 
     function runSystemTool(functionName) {

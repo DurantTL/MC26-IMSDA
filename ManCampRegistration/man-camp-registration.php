@@ -1218,13 +1218,33 @@ function mancamp_admin_notice_for_stale_failures() {
 // ============================================================
 
 function mancamp_admin_menu() {
+    add_menu_page(
+        'Man Camp Registration',
+        'Man Camp',
+        'manage_options',
+        'mancamp-registration',
+        'mancamp_admin_page',
+        'dashicons-groups',
+        58
+    );
+
+    // First submenu label overrides the duplicated top-level label.
     add_submenu_page(
-        'options-general.php',
-        'Man Camp Registration',
-        'Man Camp Registration',
+        'mancamp-registration',
+        'Man Camp Registration Settings',
+        'Settings',
         'manage_options',
         'mancamp-registration',
         'mancamp_admin_page'
+    );
+
+    add_submenu_page(
+        'mancamp-registration',
+        'Man Camp — Roommate Requests',
+        'Roommate Requests',
+        'manage_options',
+        'mancamp-roommate-requests',
+        'mancamp_roommate_page'
     );
 }
 
@@ -1240,7 +1260,7 @@ function mancamp_save_settings() {
         'offline_values' => sanitize_text_field( $_POST['offline_values'] ?? '' ),
     ] );
 
-    wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&saved=1' ) );
+    wp_redirect( admin_url( 'admin.php?page=mancamp-registration&saved=1' ) );
     exit;
 }
 
@@ -1252,7 +1272,7 @@ function mancamp_handle_retry() {
 
     if ( $entry_id === 0 ) {
         mancamp_retry_failed_webhooks();
-        wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( 'batch' ) ) );
+        wp_redirect( admin_url( 'admin.php?page=mancamp-registration&retry_ok=' . urlencode( 'batch' ) ) );
         exit;
     }
 
@@ -1260,16 +1280,16 @@ function mancamp_handle_retry() {
         mancamp_log_event( $entry_id, 'retry', 'Manual retry attempting webhook delivery.' );
         $result = mancamp_process_entry_webhook( $entry_id, [], true );
         if ( is_wp_error( $result ) ) {
-            wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_failed=' . urlencode( $result->get_error_message() ) ) );
+            wp_redirect( admin_url( 'admin.php?page=mancamp-registration&retry_failed=' . urlencode( $result->get_error_message() ) ) );
         } else {
             if ( ! empty( $result['duplicate'] ) ) {
-                wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( 'already-processed' ) ) );
+                wp_redirect( admin_url( 'admin.php?page=mancamp-registration&retry_ok=' . urlencode( 'already-processed' ) ) );
             } else {
-                wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_ok=' . urlencode( 'sent' ) ) );
+                wp_redirect( admin_url( 'admin.php?page=mancamp-registration&retry_ok=' . urlencode( 'sent' ) ) );
             }
         }
     } else {
-        wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&retry_failed=' . urlencode( 'Failed webhook entry not found.' ) ) );
+        wp_redirect( admin_url( 'admin.php?page=mancamp-registration&retry_failed=' . urlencode( 'Failed webhook entry not found.' ) ) );
     }
     exit;
 }
@@ -1284,18 +1304,18 @@ function mancamp_handle_manual_resync() {
         try {
             $result = mancamp_process_entry_webhook( $ff_entry_id, [], true );
             if ( ! is_wp_error( $result ) ) {
-                wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_ok=' . $ff_entry_id ) );
+                wp_redirect( admin_url( 'admin.php?page=mancamp-registration&resync_ok=' . $ff_entry_id ) );
                 exit;
             }
-            wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_failed=' . urlencode( $result->get_error_message() ) ) );
+            wp_redirect( admin_url( 'admin.php?page=mancamp-registration&resync_failed=' . urlencode( $result->get_error_message() ) ) );
             exit;
         } catch ( Exception $e ) {
-            wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_failed=' . urlencode( $e->getMessage() ) ) );
+            wp_redirect( admin_url( 'admin.php?page=mancamp-registration&resync_failed=' . urlencode( $e->getMessage() ) ) );
             exit;
         }
     }
 
-    wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&resync_failed=' . urlencode( 'Entry not found.' ) ) );
+    wp_redirect( admin_url( 'admin.php?page=mancamp-registration&resync_failed=' . urlencode( 'Entry not found.' ) ) );
     exit;
 }
 
@@ -1304,7 +1324,7 @@ function mancamp_handle_run_offline_sweep() {
     check_admin_referer( 'mancamp_run_offline_sweep', 'mancamp_run_offline_sweep_nonce' );
 
     mancamp_sweep_offline_submissions();
-    wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&sweep_ok=1' ) );
+    wp_redirect( admin_url( 'admin.php?page=mancamp-registration&sweep_ok=1' ) );
     exit;
 }
 
@@ -1325,7 +1345,7 @@ function mancamp_handle_save_roommate_match() {
         update_option( MANCAMP_ROOMMATE_MATCHES_OPTION, $overrides, false );
     }
 
-    wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&roommate_saved=1#roommate-requests' ) );
+    wp_redirect( admin_url( 'admin.php?page=mancamp-roommate-requests&roommate_saved=1' ) );
     exit;
 }
 
@@ -1794,6 +1814,126 @@ function mancamp_admin_page() {
           </tbody>
         </table>
       <?php endif; ?>
+    </div>
+
+    </div><!-- /.wrap -->
+    <?php
+}
+
+function mancamp_roommate_page() {
+    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Insufficient permissions.' );
+
+    $roommate_saved     = isset( $_GET['roommate_saved'] );
+    $roommate_overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
+    $all_submissions    = mancamp_get_all_form_submissions();
+
+    ?>
+    <div class="wrap" style="max-width:900px;">
+    <h1>Man Camp — Roommate Requests</h1>
+
+    <?php if ( $roommate_saved ) : ?>
+      <div class="notice notice-success is-dismissible"><p>✔ Roommate match saved.</p></div>
+    <?php endif; ?>
+
+    <?php
+    // Build registrant index and rows with accommodations text.
+    $roommate_rows    = [];
+    $registrant_index = [];
+    foreach ( $all_submissions as $sub ) {
+        $sub_id = (int) ( $sub['id'] ?? 0 );
+        $fd     = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
+        $first  = sanitize_text_field( $fd['first_name'] ?? '' );
+        $last   = sanitize_text_field( $fd['last_name']  ?? '' );
+        $name   = trim( $first . ' ' . $last );
+        if ( $name === '' ) {
+            $people_raw = $fd['people_json'] ?? $fd['attendees_json'] ?? '';
+            if ( $people_raw !== '' ) {
+                $ppl = json_decode( wp_unslash( $people_raw ), true );
+                if ( is_array( $ppl ) && ! empty( $ppl[0] ) ) {
+                    $name = trim(
+                        sanitize_text_field( $ppl[0]['first_name'] ?? $ppl[0]['firstName'] ?? '' ) . ' ' .
+                        sanitize_text_field( $ppl[0]['last_name']  ?? $ppl[0]['lastName']  ?? '' )
+                    );
+                }
+            }
+        }
+        $accommodations = sanitize_textarea_field( $fd['accommodations'] ?? '' );
+        if ( $sub_id > 0 ) {
+            $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
+        }
+        if ( $accommodations !== '' && $sub_id > 0 ) {
+            $auto_match = mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions );
+            $roommate_rows[] = [
+                'entry_id'       => $sub_id,
+                'name'           => $name ?: '—',
+                'accommodations' => $accommodations,
+                'auto_match_id'  => $auto_match,
+                'override_id'    => $roommate_overrides[ $sub_id ] ?? null,
+            ];
+        }
+    }
+    ?>
+
+    <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;">
+    <?php if ( empty( $roommate_rows ) ) : ?>
+      <p style="color:#646970;">No accommodations requests found yet. Registrants who fill in the "accommodations" field will appear here.</p>
+    <?php else : ?>
+      <table class="widefat striped">
+        <thead>
+          <tr>
+            <th>FF Entry ID</th>
+            <th>Registrant</th>
+            <th>Accommodations Request</th>
+            <th>Auto-Matched To</th>
+            <th>Manual Override</th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php foreach ( $roommate_rows as $row ) :
+            $effective_match_id   = $row['override_id'] ?? $row['auto_match_id'];
+            $effective_match_name = $effective_match_id ? ( $registrant_index[ $effective_match_id ] ?? 'Entry #' . $effective_match_id ) : null;
+            $auto_match_name      = $row['auto_match_id'] ? ( $registrant_index[ $row['auto_match_id'] ] ?? 'Entry #' . $row['auto_match_id'] ) : null;
+          ?>
+          <tr>
+            <td><?php echo esc_html( $row['entry_id'] ); ?></td>
+            <td><?php echo esc_html( $row['name'] ); ?></td>
+            <td style="max-width:220px;word-break:break-word;"><?php echo esc_html( $row['accommodations'] ); ?></td>
+            <td>
+              <?php if ( $effective_match_name ) : ?>
+                <?php echo esc_html( $effective_match_name ); ?> <span style="color:#646970;">(#<?php echo (int) $effective_match_id; ?>)</span>
+                <?php if ( $row['override_id'] ) : ?>
+                  <span style="color:#2271b1;font-size:11px;display:block;">Manual override</span>
+                <?php elseif ( $auto_match_name ) : ?>
+                  <span style="color:#646970;font-size:11px;display:block;">Auto-matched</span>
+                <?php endif; ?>
+              <?php else : ?>
+                <span style="color:#646970;">No match found</span>
+              <?php endif; ?>
+            </td>
+            <td>
+              <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <?php wp_nonce_field( 'mancamp_save_roommate_match', 'mancamp_roommate_match_nonce' ); ?>
+                <input type="hidden" name="action" value="mancamp_save_roommate_match">
+                <input type="hidden" name="mancamp_roommate_entry_id" value="<?php echo esc_attr( $row['entry_id'] ); ?>">
+                <select name="mancamp_roommate_matched_id" style="max-width:180px;">
+                  <option value="0">— clear / auto —</option>
+                  <?php foreach ( $registrant_index as $reg_id => $reg_name ) :
+                    if ( $reg_id === $row['entry_id'] ) continue;
+                  ?>
+                    <option value="<?php echo esc_attr( $reg_id ); ?>"
+                      <?php selected( (int) ( $row['override_id'] ?? 0 ), $reg_id ); ?>>
+                      <?php echo esc_html( $reg_name ); ?> (#<?php echo (int) $reg_id; ?>)
+                    </option>
+                  <?php endforeach; ?>
+                </select>
+                <button type="submit" class="button button-small" style="margin-left:4px;">Save Match</button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    <?php endif; ?>
     </div>
 
     </div><!-- /.wrap -->

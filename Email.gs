@@ -83,7 +83,12 @@ function buildConfirmationEmailDataFromRegistration_(ss, registrationId) {
           amountPaid: Number(reg['amount_paid']) || 0,
           optionPrice: Number(reg['option_price']) || 0
         }
-      : {}
+      : {},
+    roommateRequest: {
+      requestText:           String(reg['roommate_request_text'] || '').trim(),
+      matchedRegistrationId: String(reg['roommate_matched_id'] || '').trim(),
+      matchStatus:           String(reg['roommate_match_status'] || 'none').trim()
+    }
   });
 }
 
@@ -163,7 +168,17 @@ function normalizeConfirmationEmailData_(data) {
     costBreakdown: data.costBreakdown || {},
     guardLinkSummary: normalizedPeople.map(function(person) { return person.guardianLinkKey; }).filter(Boolean).filter(function(value, index, arr) {
       return arr.indexOf(value) === index;
-    }).join(', ')
+    }).join(', '),
+    roommateRequest: (function() {
+      var rr = data.roommateRequest;
+      if (!rr || typeof rr !== 'object') return { requestText: '', matchedRegistrationId: '', matchStatus: 'none' };
+      var status = String(rr.matchStatus || '').trim().toLowerCase();
+      return {
+        requestText:           String(rr.requestText || '').trim(),
+        matchedRegistrationId: String(rr.matchedRegistrationId || '').trim(),
+        matchStatus:           ['none', 'requested', 'matched'].includes(status) ? status : 'none'
+      };
+    })()
   };
 }
 
@@ -391,6 +406,8 @@ function buildConfirmationEmailHtml_(data) {
               '</div>' +
             '</div>' +
 
+            buildRoommateRequestEmailSection_(data.roommateRequest) +
+
             '<div style="background:#f3f7f5;border:1px solid #d8e4dd;border-radius:12px;padding:16px 18px;">' +
               '<div style="font-size:15px;font-weight:700;margin-bottom:6px;">Questions?</div>' +
               '<div style="font-size:14px;line-height:1.7;color:#394851;">' +
@@ -414,6 +431,33 @@ function buildConfirmationEmailHtml_(data) {
 '</body>' +
 '</html>'
   );
+}
+
+/**
+ * Builds the "Roommate Request" block for the confirmation email.
+ * Returns an empty string when matchStatus is 'none' or the block is absent.
+ *
+ * @param  {Object|null} rr — normalized roommateRequest object
+ * @returns {string}        HTML string (may be empty)
+ */
+function buildRoommateRequestEmailSection_(rr) {
+  if (!rr || rr.matchStatus === 'none' || !rr.matchStatus || !rr.requestText) return '';
+
+  var statusLabels = {
+    requested: "We'll do our best to accommodate your request — our team will review it.",
+    matched:   "We've noted a potential match and will confirm your assignment before camp."
+  };
+  var statusLabel = statusLabels[rr.matchStatus] || '';
+  if (!statusLabel) return '';
+
+  return '<div style="background:#f3f7f5;border:1px solid #d8e4dd;border-radius:12px;padding:16px 18px;margin-bottom:20px;">' +
+    '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">Roommate Request</div>' +
+    '<div style="font-size:14px;line-height:1.7;color:#394851;">' +
+      'We received your accommodations request: ' +
+      '<em style="color:#263238;">&ldquo;' + escapeHtml_(rr.requestText) + '&rdquo;</em>' +
+    '</div>' +
+    '<div style="margin-top:8px;font-size:13px;color:#53636b;">Status: ' + escapeHtml_(statusLabel) + '</div>' +
+  '</div>';
 }
 
 function buildGuardianRelationshipLine_(person, people) {

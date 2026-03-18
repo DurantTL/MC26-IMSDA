@@ -379,10 +379,42 @@ function generateAllReportSheets() {
     }
   });
 
+  // Append roommate request summary stats to the Registration Dashboard sheet
+  try {
+    appendRoommateStatsToDashboard_();
+  } catch (err) {
+    results.errors.push('roommateStats: ' + err.toString());
+  }
+
   // Legacy compatibility field name retained for callers that still expect "clubs".
   results.clubs = results.registrationDashboard;
   Logger.log('generateAllReportSheets complete: ' + JSON.stringify(results));
   return results;
+}
+
+/**
+ * Appends a roommate request summary block to the Registration Dashboard sheet.
+ * Reads RoommateAssignments and writes three summary rows after a blank separator.
+ */
+function appendRoommateStatsToDashboard_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dashSheet = ss.getSheetByName('Registration Dashboard');
+  if (!dashSheet) return;
+
+  const rmSheet = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+  const rows    = rmSheet && rmSheet.getLastRow() > 1 ? readSheetObjects_(rmSheet) : [];
+
+  const total    = rows.length;
+  const matched  = rows.filter(r => String(r.match_status || '').toLowerCase() === 'matched').length;
+  const unmatched = rows.filter(r => String(r.match_status || '').toLowerCase() === 'requested').length;
+
+  const lastRow = dashSheet.getLastRow();
+  dashSheet.getRange(lastRow + 2, 1).setValue('— Roommate Request Summary —');
+  dashSheet.getRange(lastRow + 3, 1, 3, 2).setValues([
+    ['Total roommate requests', total],
+    ['Matched',                 matched],
+    ['Unmatched (requested)',   unmatched]
+  ]);
 }
 
 function testReportsWithFakeData() {

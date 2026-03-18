@@ -1298,9 +1298,24 @@ function mancamp_handle_manual_resync() {
     if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Insufficient permissions.' );
     check_admin_referer( 'mancamp_manual_resync', 'mancamp_manual_nonce' );
 
-    $ff_entry_id = (int) ( $_POST['mancamp_manual_entry_id'] ?? 0 );
+    $ff_entry_id         = (int) ( $_POST['mancamp_manual_entry_id'] ?? 0 );
+    $force_roommate_reset = ! empty( $_POST['mancamp_force_roommate_reset'] );
+    $clear_sent_entry     = ! empty( $_POST['mancamp_clear_sent_entry'] );
 
     if ( $ff_entry_id > 0 && function_exists( 'wpFluentForm' ) ) {
+
+        // Option: clear roommate override before resyncing so GAS re-evaluates the request
+        if ( $force_roommate_reset ) {
+            $overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
+            unset( $overrides[ $ff_entry_id ] );
+            update_option( MANCAMP_ROOMMATE_MATCHES_OPTION, $overrides, false );
+        }
+
+        // Option: remove from sent-entry-IDs so GAS duplicate guard will not reject it
+        if ( $clear_sent_entry ) {
+            mancamp_remove_sent_entry_id( $ff_entry_id );
+        }
+
         try {
             $result = mancamp_process_entry_webhook( $ff_entry_id, [], true );
             if ( ! is_wp_error( $result ) ) {
@@ -1633,8 +1648,20 @@ function mancamp_admin_page() {
           <input type="number" id="ff_entry_id" name="mancamp_manual_entry_id" min="1" style="width:140px;" required>
           <button type="submit" class="button button-primary" style="margin-left:8px;">Re-send to GAS</button>
         </p>
+        <p style="margin-bottom:6px;">
+          <label>
+            <input type="checkbox" name="mancamp_force_roommate_reset" value="1">
+            Force roommate re-evaluation <span style="color:#646970;font-size:12px;">(clears the saved roommate override for this entry before resyncing)</span>
+          </label>
+        </p>
+        <p style="margin-bottom:6px;">
+          <label>
+            <input type="checkbox" name="mancamp_clear_sent_entry" value="1">
+            Clear sent entry ID <span style="color:#646970;font-size:12px;">(allows GAS to reprocess this submission — use carefully)</span>
+          </label>
+        </p>
         <p style="color:#646970;font-size:12px;">
-          Re-sends a specific submission to GAS. GAS will reject it silently if already processed (duplicate guard).
+          Re-sends a specific submission to GAS. GAS will reject it silently if already processed (duplicate guard) unless you clear the sent entry ID above.
         </p>
       </form>
     </div>
@@ -1988,6 +2015,20 @@ function mancamp_mark_entry_sent( $entry_id ) {
     ];
     update_option( MANCAMP_SENT_ENTRY_IDS_OPTION, array_values( $records ), false );
     mancamp_prune_sent_entry_ids();
+}
+
+/**
+ * Removes a specific entry_id from the mancamp_sent_entry_ids option.
+ * Inverse of mancamp_mark_entry_sent(). Safe to call when the entry is not present.
+ *
+ * @param int $entry_id
+ */
+function mancamp_remove_sent_entry_id( $entry_id ) {
+    $records = get_option( MANCAMP_SENT_ENTRY_IDS_OPTION, [] );
+    $records = array_values( array_filter( $records, static function ( $record ) use ( $entry_id ) {
+        return (int) ( $record['entry_id'] ?? 0 ) !== (int) $entry_id;
+    } ) );
+    update_option( MANCAMP_SENT_ENTRY_IDS_OPTION, $records, false );
 }
 
 function mancamp_prune_sent_entry_ids() {

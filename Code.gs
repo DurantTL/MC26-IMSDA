@@ -1021,5 +1021,11 @@ function onOpen() {
         .addItem('👥 Find Duplicates',             'adminFindDuplicates')
         .addItem('🗑️ Delete Registration',        'adminDeleteRegistration')
     )
+    .addSeparator()
+    .addSubMenu(
+      SpreadsheetApp.getUi().createMenu('🛏️ Roommate Tools')
+        .addItem('📋 Backfill Roommate Requests from Registrations', 'backfillRoommateRequests')
+        .addItem('🖥️ Open Roommate Manager', 'showAdminSidebar')
+    )
     .addToUi();
 }

@@ -28,6 +28,7 @@ define( 'MANCAMP_WEBHOOK_LOG_OPTION', 'mancamp_webhook_log' );
 define( 'MANCAMP_RETRY_HOOK', 'mancamp_retry_webhooks' );
 define( 'MANCAMP_OFFLINE_SWEEP_HOOK', 'mancamp_offline_sweep' );
 define( 'MANCAMP_OFFLINE_SWEEP_STATUS_OPTION', 'mancamp_offline_sweep_status' );
+define( 'MANCAMP_ROOMMATE_MATCHES_OPTION', 'mancamp_roommate_matches' );
 
 function mancamp_get_setting( $key, $default = '' ) {
     $options = get_option( MANCAMP_OPTION_GROUP, [] );
@@ -75,6 +76,7 @@ const MANCAMP_FIELD_MAP = [
     'payment_method'          => 'payment_method',
     'notes'                   => 'notes',
     'medical_notes'           => 'medical_notes',
+    'accommodations'          => 'accommodations',
 ];
 
 const MANCAMP_BOOLEAN_FIELDS = [
@@ -126,10 +128,16 @@ function mancamp_register_hooks() {
     add_action( 'admin_post_mancamp_save_settings',  'mancamp_save_settings' );
     add_action( 'admin_post_mancamp_retry',          'mancamp_handle_retry' );
     add_action( 'admin_post_mancamp_manual_resync',  'mancamp_handle_manual_resync' );
-    add_action( 'admin_post_mancamp_run_offline_sweep', 'mancamp_handle_run_offline_sweep' );
-    add_action( 'fluentform_payment_paid', 'mancamp_handle_payment_event', 20, 10 );
+    add_action( 'admin_post_mancamp_run_offline_sweep',  'mancamp_handle_run_offline_sweep' );
+    add_action( 'admin_post_mancamp_save_roommate_match', 'mancamp_handle_save_roommate_match' );
+    // Legacy Fluent Forms 5.x hooks (kept as fallback)
+    add_action( 'fluentform_payment_paid',           'mancamp_handle_payment_event', 20, 10 );
     add_action( 'fluentform_payment_status_to_paid', 'mancamp_handle_payment_event', 20, 10 );
-    add_action( 'fluentform_payment_status_updated', 'mancamp_maybe_send_offline', 10, 3 );
+    add_action( 'fluentform_payment_status_updated', 'mancamp_maybe_send_offline',   10, 3 );
+    // Fluent Forms 6.x slash-namespaced hooks
+    add_action( 'fluentform/payment_paid',                'mancamp_handle_ff6_payment_paid',   20, 2 );
+    add_action( 'fluentform/after_payment_status_change', 'mancamp_handle_ff6_status_change',   20, 2 );
+    add_action( 'fluentform/payment_status_updated',      'mancamp_handle_ff6_status_updated',  20, 3 );
     add_action( 'fluentform_submission_inserted', 'mancamp_maybe_send_offline_on_submit', 10, 3 );
     add_action( MANCAMP_RETRY_HOOK, 'mancamp_retry_failed_webhooks' );
     add_action( MANCAMP_OFFLINE_SWEEP_HOOK, 'mancamp_sweep_offline_submissions' );
@@ -327,6 +335,94 @@ function mancamp_maybe_send_offline_on_submit( $insertId, $formData, $form ) {
     ], false, 'offline_submission_hook', 'Offline submission hook attempting webhook delivery.' );
 }
 
+// ============================================================
+// SECTION 6B — FLUENT FORMS 6.x PAYMENT HOOK HANDLERS
+// ============================================================
+
+/**
+ * fluentform/payment_paid — FF6 signature: ($submission, $transaction)
+ * $submission is a stdClass; $transaction is a stdClass or array.
+ */
+function mancamp_handle_ff6_payment_paid( $submission, $transaction ) {
+    if ( is_object( $submission ) ) {
+        $submission = get_object_vars( $submission );
+    }
+
+    $entry_id = (int) ( $submission['id'] ?? $submission['submission_id'] ?? 0 );
+    $form_id  = (int) ( $submission['form_id'] ?? 0 );
+
+    if ( $form_id !== mancamp_form_id() ) {
+        return;
+    }
+
+    if ( mancamp_has_sent_entry_id( $entry_id ) ) {
+        mancamp_log_event( $entry_id, 'duplicate', 'FF6 paid hook: entry already sent — skipping.' );
+        return;
+    }
+
+    $payment = is_object( $transaction ) ? get_object_vars( $transaction ) : ( is_array( $transaction ) ? $transaction : [] );
+
+    mancamp_process_entry_webhook( $entry_id, [
+        'submission' => $submission,
+        'payment'    => $payment,
+    ], false, 'ff6_paid_hook', 'FF6 payment_paid hook attempting webhook delivery.' );
+}
+
+/**
+ * fluentform/after_payment_status_change — FF6 signature: ($newStatus, $submission)
+ * $submission is a stdClass.
+ */
+function mancamp_handle_ff6_status_change( $newStatus, $submission ) {
+    if ( is_object( $submission ) ) {
+        $submission = get_object_vars( $submission );
+    }
+
+    $entry_id = (int) ( $submission['id'] ?? $submission['submission_id'] ?? 0 );
+    $form_id  = (int) ( $submission['form_id'] ?? 0 );
+
+    if ( $form_id !== mancamp_form_id() ) {
+        return;
+    }
+
+    if ( mancamp_has_sent_entry_id( $entry_id ) ) {
+        mancamp_log_event( $entry_id, 'duplicate', 'FF6 status change hook: entry already sent — skipping.' );
+        return;
+    }
+
+    mancamp_process_entry_webhook( $entry_id, [
+        'submission' => $submission,
+        'payment'    => mancamp_get_payment_record( $entry_id ),
+    ], false, 'ff6_status_change', 'FF6 after_payment_status_change hook attempting webhook delivery.' );
+}
+
+/**
+ * fluentform/payment_status_updated — FF6 signature: ($newStatus, $entryId, $submission)
+ * $submission is a stdClass.
+ */
+function mancamp_handle_ff6_status_updated( $newStatus, $entryId, $submission ) {
+    if ( is_object( $submission ) ) {
+        $submission = get_object_vars( $submission );
+    }
+
+    $entry_id = (int) ( $submission['id'] ?? $submission['submission_id'] ?? $entryId ?? 0 );
+    $form_id  = (int) ( $submission['form_id'] ?? 0 );
+
+    if ( $form_id !== mancamp_form_id() ) {
+        return;
+    }
+
+    if ( mancamp_has_sent_entry_id( $entry_id ) ) {
+        mancamp_log_event( $entry_id, 'duplicate', 'FF6 status updated hook: entry already sent — skipping.' );
+        return;
+    }
+
+    mancamp_process_entry_webhook( $entry_id, [
+        'submission' => $submission,
+        'payment'    => mancamp_get_payment_record( $entry_id ),
+    ], false, 'ff6_status_updated', 'FF6 payment_status_updated hook attempting webhook delivery.' );
+}
+
+
 function mancamp_process_entry_webhook( $entry_id, $context = [], $is_retry = false, $attempt_status = 'attempting', $attempt_message = '' ) {
     $entry_id = (int) $entry_id;
     if ( $entry_id <= 0 ) {
@@ -401,6 +497,9 @@ function mancamp_build_payload( $submission, $payment = [] ) {
     $submitted_at = mancamp_submission_timestamp( $submission );
     mancamp_warn_for_missing_fields( $entry_id, $top_level );
 
+    $accommodations = sanitize_textarea_field( $form_data['accommodations'] ?? '' );
+    $roommate_request = mancamp_build_roommate_request( $entry_id, $accommodations );
+
     return [
         'action'            => 'submitRegistration',
         'eventKey'          => MANCAMP_EVENT_KEY,
@@ -415,6 +514,7 @@ function mancamp_build_payload( $submission, $payment = [] ) {
         'people'            => $people,
         'attendeeCount'     => $attendee_count,
         'payment'           => $payment_meta,
+        'roommateRequest'   => $roommate_request,
     ];
 }
 
@@ -527,6 +627,7 @@ function mancamp_sanitise_people( $people, $formData = [] ) {
             'is_minor'                 => $is_minor,
             'notes'                    => $notes,
             'medical_notes'            => sanitize_textarea_field( $raw['medical_notes'] ?? '' ),
+            'accommodations'           => $idx === 0 ? sanitize_textarea_field( $formData['accommodations'] ?? '' ) : '',
         ];
 
         $clean[] = $person;
@@ -572,6 +673,7 @@ function mancamp_build_single_person_from_fields( $formData ) {
         'lodging_option_key'       => mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? $formData['lodging_preference'] ?? '' ),
         'notes'                    => sanitize_textarea_field( $formData['notes'] ?? '' ),
         'medical_notes'            => sanitize_textarea_field( $formData['medical_notes'] ?? '' ),
+        'accommodations'           => sanitize_textarea_field( $formData['accommodations'] ?? '' ),
     ];
 }
 
@@ -1206,6 +1308,27 @@ function mancamp_handle_run_offline_sweep() {
     exit;
 }
 
+function mancamp_handle_save_roommate_match() {
+    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Insufficient permissions.' );
+    check_admin_referer( 'mancamp_save_roommate_match', 'mancamp_roommate_match_nonce' );
+
+    $entry_id   = (int) ( $_POST['mancamp_roommate_entry_id']   ?? 0 );
+    $matched_id = (int) ( $_POST['mancamp_roommate_matched_id'] ?? 0 );
+
+    if ( $entry_id > 0 ) {
+        $overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
+        if ( $matched_id > 0 ) {
+            $overrides[ $entry_id ] = $matched_id;
+        } else {
+            unset( $overrides[ $entry_id ] );
+        }
+        update_option( MANCAMP_ROOMMATE_MATCHES_OPTION, $overrides, false );
+    }
+
+    wp_redirect( admin_url( 'options-general.php?page=mancamp-registration&roommate_saved=1#roommate-requests' ) );
+    exit;
+}
+
 
 // ============================================================
 // SECTION 12 — ADMIN PAGE RENDER
@@ -1248,6 +1371,9 @@ function mancamp_admin_page() {
         'last_run' => '',
         'processed_count' => 0,
     ] );
+    $roommate_saved = isset( $_GET['roommate_saved'] );
+    $roommate_overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
+    $all_submissions_for_roommate = mancamp_get_all_form_submissions();
 
     ?>
     <div class="wrap" style="max-width:900px;">
@@ -1276,6 +1402,9 @@ function mancamp_admin_page() {
     <?php endif; ?>
     <?php if ( $sweep_ok ) : ?>
       <div class="notice notice-success is-dismissible"><p>✔ Offline payment sweep completed.</p></div>
+    <?php endif; ?>
+    <?php if ( $roommate_saved ) : ?>
+      <div class="notice notice-success is-dismissible"><p>✔ Roommate match saved.</p></div>
     <?php endif; ?>
 
 
@@ -1466,6 +1595,7 @@ function mancamp_admin_page() {
           <tr><td><code>notes</code></td>                   <td><code>notes</code></td>                   <td>Textarea</td> <td>General registration notes</td></tr>
           <tr><td><code>medical_notes</code></td>           <td><code>medical_notes</code></td>           <td>Textarea</td> <td>Medical/disclosure notes when supplied</td></tr>
           <tr><td><code>attendees_json</code></td>          <td><code>attendees_json</code></td>          <td>Hidden</td>   <td>Legacy mirror of <code>people_json</code> retained for compatibility</td></tr>
+          <tr><td><code>accommodations</code></td>          <td><code>accommodations</code></td>          <td>Textarea</td> <td>Roommate request / special accommodations text entered by registrant</td></tr>
         </tbody>
       </table>
       <p style="color:#646970;font-size:12px;margin-top:10px;">The live form uses a custom JavaScript builder rendered into <code>#mancamp-builder</code>. This plugin expects the hidden-field contract above and waits until Fluent Forms marks payment complete before posting to GAS.</p>
@@ -1562,6 +1692,110 @@ function mancamp_admin_page() {
       <?php endif; ?>
     </div>
 
+
+    <!-- ── Roommate Requests ─────────────────────────────────────────── -->
+    <div id="roommate-requests" style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;margin-bottom:24px;">
+      <h2 style="margin-top:0;">Roommate Requests</h2>
+      <?php
+      // Build index: entry_id => ['name' => '...', 'accommodations' => '...']
+      $roommate_rows = [];
+      $registrant_index = []; // entry_id => display name, for the dropdown
+      foreach ( $all_submissions_for_roommate as $sub ) {
+          $sub_id   = (int) ( $sub['id'] ?? 0 );
+          $fd       = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
+          $first    = sanitize_text_field( $fd['first_name'] ?? '' );
+          $last     = sanitize_text_field( $fd['last_name']  ?? '' );
+          $name     = trim( $first . ' ' . $last );
+          if ( $name === '' ) {
+              $people_raw = $fd['people_json'] ?? $fd['attendees_json'] ?? '';
+              if ( $people_raw !== '' ) {
+                  $ppl = json_decode( wp_unslash( $people_raw ), true );
+                  if ( is_array( $ppl ) && ! empty( $ppl[0] ) ) {
+                      $name = trim(
+                          sanitize_text_field( $ppl[0]['first_name'] ?? $ppl[0]['firstName'] ?? '' ) . ' ' .
+                          sanitize_text_field( $ppl[0]['last_name']  ?? $ppl[0]['lastName']  ?? '' )
+                      );
+                  }
+              }
+          }
+          $accommodations = sanitize_textarea_field( $fd['accommodations'] ?? '' );
+          if ( $sub_id > 0 ) {
+              $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
+          }
+          if ( $accommodations !== '' && $sub_id > 0 ) {
+              $auto_match = mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions_for_roommate );
+              $roommate_rows[] = [
+                  'entry_id'       => $sub_id,
+                  'name'           => $name ?: '—',
+                  'accommodations' => $accommodations,
+                  'auto_match_id'  => $auto_match,
+                  'override_id'    => $roommate_overrides[ $sub_id ] ?? null,
+              ];
+          }
+      }
+      ?>
+      <?php if ( empty( $roommate_rows ) ) : ?>
+        <p style="color:#646970;">No accommodations requests found yet. Registrants who fill in the "accommodations" field will appear here.</p>
+      <?php else : ?>
+        <table class="widefat striped">
+          <thead>
+            <tr>
+              <th>FF Entry ID</th>
+              <th>Registrant</th>
+              <th>Accommodations Request</th>
+              <th>Auto-Matched To</th>
+              <th>Manual Override</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ( $roommate_rows as $row ) :
+              $effective_match_id = $row['override_id'] ?? $row['auto_match_id'];
+              $effective_match_name = $effective_match_id ? ( $registrant_index[ $effective_match_id ] ?? 'Entry #' . $effective_match_id ) : null;
+              $auto_match_name = $row['auto_match_id'] ? ( $registrant_index[ $row['auto_match_id'] ] ?? 'Entry #' . $row['auto_match_id'] ) : null;
+            ?>
+            <tr>
+              <td><?php echo esc_html( $row['entry_id'] ); ?></td>
+              <td><?php echo esc_html( $row['name'] ); ?></td>
+              <td style="max-width:220px;word-break:break-word;"><?php echo esc_html( $row['accommodations'] ); ?></td>
+              <td>
+                <?php if ( $effective_match_name ) : ?>
+                  <?php echo esc_html( $effective_match_name ); ?> <span style="color:#646970;">(#<?php echo (int) $effective_match_id; ?>)</span>
+                  <?php if ( $row['override_id'] ) : ?>
+                    <span style="color:#2271b1;font-size:11px;display:block;">Manual override</span>
+                  <?php elseif ( $auto_match_name ) : ?>
+                    <span style="color:#646970;font-size:11px;display:block;">Auto-matched</span>
+                  <?php endif; ?>
+                <?php else : ?>
+                  <span style="color:#646970;">No match found</span>
+                <?php endif; ?>
+              </td>
+              <td>
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                  <?php wp_nonce_field( 'mancamp_save_roommate_match', 'mancamp_roommate_match_nonce' ); ?>
+                  <input type="hidden" name="action" value="mancamp_save_roommate_match">
+                  <input type="hidden" name="mancamp_roommate_entry_id" value="<?php echo esc_attr( $row['entry_id'] ); ?>">
+                  <select name="mancamp_roommate_matched_id" style="max-width:180px;">
+                    <option value="0">— clear / auto —</option>
+                    <?php foreach ( $registrant_index as $reg_id => $reg_name ) :
+                      if ( $reg_id === $row['entry_id'] ) continue;
+                    ?>
+                      <option value="<?php echo esc_attr( $reg_id ); ?>"
+                        <?php selected( (int) ( $row['override_id'] ?? 0 ), $reg_id ); ?>>
+                        <?php echo esc_html( $reg_name ); ?> (#<?php echo (int) $reg_id; ?>)
+                      </option>
+                    <?php endforeach; ?>
+                  </select>
+                  <button type="submit" class="button button-small" style="margin-left:4px;">Save Match</button>
+                </form>
+              </td>
+            </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      <?php endif; ?>
+    </div>
+
     </div><!-- /.wrap -->
     <?php
 }
@@ -1637,6 +1871,12 @@ function mancamp_resolve_payment_hook_context( $args ) {
     $submission = [];
     $payment = [];
     $numeric_args = [];
+
+    // If the first argument is a plain integer, capture it immediately as the
+    // entry_id so later array arguments cannot override it with a different id.
+    if ( ! empty( $args ) && is_numeric( reset( $args ) ) ) {
+        $entry_id = (int) reset( $args );
+    }
 
     foreach ( $args as $arg ) {
         if ( is_numeric( $arg ) ) {
@@ -1781,7 +2021,136 @@ function mancamp_is_offline_submission( $submission, $payment = [] ) {
 
 
 // ============================================================
-// SECTION 14 — ACTIVATION / DEACTIVATION
+// SECTION 14 — ROOMMATE MATCHING
+// ============================================================
+
+/**
+ * Fetch all submissions for the configured form, with response decoded.
+ *
+ * @return array
+ */
+function mancamp_get_all_form_submissions() {
+    if ( ! function_exists( 'wpFluent' ) || ! mancamp_form_id() ) {
+        return [];
+    }
+
+    try {
+        $rows = wpFluent()->table( 'fluentform_submissions' )
+            ->where( 'form_id', mancamp_form_id() )
+            ->get();
+    } catch ( Exception $e ) {
+        return [];
+    }
+
+    $results = [];
+    foreach ( $rows as $row ) {
+        $row = is_object( $row ) ? get_object_vars( $row ) : $row;
+        if ( ! is_array( $row ) ) {
+            continue;
+        }
+        if ( isset( $row['response'] ) && is_string( $row['response'] ) ) {
+            $decoded = json_decode( $row['response'], true );
+            $row['response'] = is_array( $decoded ) ? $decoded : [];
+        } elseif ( ! isset( $row['response'] ) ) {
+            $row['response'] = [];
+        }
+        $results[] = $row;
+    }
+
+    return $results;
+}
+
+/**
+ * Fuzzy-match an accommodations text string against other registrants' names.
+ *
+ * @param int    $entry_id          Current entry being processed (excluded from search).
+ * @param string $accommodations_text Raw accommodations/roommate request text.
+ * @param array  $all_submissions   Array of normalised submission rows.
+ * @return int|null  Matched entry_id, or null if no match found.
+ */
+function mancamp_find_roommate_match( $entry_id, $accommodations_text, $all_submissions ) {
+    $needle = strtolower( trim( $accommodations_text ) );
+    if ( $needle === '' ) {
+        return null;
+    }
+
+    foreach ( $all_submissions as $sub ) {
+        $sub_entry_id = (int) ( $sub['id'] ?? 0 );
+        if ( $sub_entry_id <= 0 || $sub_entry_id === (int) $entry_id ) {
+            continue;
+        }
+
+        $form_data = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
+
+        // Resolve first/last name — try flat fields first, then people_json.
+        $first = strtolower( sanitize_text_field( $form_data['first_name'] ?? '' ) );
+        $last  = strtolower( sanitize_text_field( $form_data['last_name'] ?? '' ) );
+
+        if ( $first === '' || $last === '' ) {
+            $people_raw = $form_data['people_json'] ?? $form_data['attendees_json'] ?? '';
+            if ( $people_raw !== '' ) {
+                $people = json_decode( wp_unslash( $people_raw ), true );
+                if ( is_array( $people ) && ! empty( $people[0] ) ) {
+                    $first = strtolower( sanitize_text_field( $people[0]['first_name'] ?? $people[0]['firstName'] ?? '' ) );
+                    $last  = strtolower( sanitize_text_field( $people[0]['last_name']  ?? $people[0]['lastName']  ?? '' ) );
+                }
+            }
+        }
+
+        if ( $first === '' || $last === '' ) {
+            continue;
+        }
+
+        // Match if both first and last name appear anywhere in the text.
+        if ( strpos( $needle, $first ) !== false && strpos( $needle, $last ) !== false ) {
+            return $sub_entry_id;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Build the roommateRequest sub-object for the GAS payload.
+ *
+ * @param int    $entry_id
+ * @param string $accommodations_text
+ * @return array
+ */
+function mancamp_build_roommate_request( $entry_id, $accommodations_text ) {
+    $text = trim( $accommodations_text );
+
+    if ( $text === '' ) {
+        return [
+            'requestText'           => '',
+            'matchedRegistrationId' => null,
+            'matchStatus'           => 'none',
+        ];
+    }
+
+    // Check for a manual admin override first.
+    $overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
+    if ( isset( $overrides[ $entry_id ] ) && $overrides[ $entry_id ] ) {
+        return [
+            'requestText'           => $text,
+            'matchedRegistrationId' => (string) $overrides[ $entry_id ],
+            'matchStatus'           => 'matched',
+        ];
+    }
+
+    $all_submissions = mancamp_get_all_form_submissions();
+    $matched_entry_id = mancamp_find_roommate_match( $entry_id, $text, $all_submissions );
+
+    return [
+        'requestText'           => $text,
+        'matchedRegistrationId' => $matched_entry_id !== null ? (string) $matched_entry_id : null,
+        'matchStatus'           => $matched_entry_id !== null ? 'matched' : 'requested',
+    ];
+}
+
+
+// ============================================================
+// SECTION 15 — ACTIVATION / DEACTIVATION
 // ============================================================
 
 register_activation_hook( __FILE__, 'mancamp_activate' );
@@ -1804,6 +2173,7 @@ function mancamp_activate() {
         'last_run' => '',
         'processed_count' => 0,
     ] );
+    add_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
     mancamp_schedule_retry_event();
     mancamp_schedule_offline_sweep_event();
 }

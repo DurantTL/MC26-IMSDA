@@ -1765,12 +1765,21 @@ function mancamp_admin_page() {
                   }
               }
           }
-          $accommodations = sanitize_textarea_field( $fd['accommodations'] ?? '' );
+          $accommodations = sanitize_textarea_field(
+              $fd['accommodations'] ??
+              $fd['description'] ??
+              $fd['special_accommodations'] ??
+              $fd['roommate_request'] ??
+              ''
+          );
           if ( $sub_id > 0 ) {
               $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
           }
-          if ( $accommodations !== '' && $sub_id > 0 ) {
-              $auto_match = mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions_for_roommate );
+          if ( $sub_id > 0 ) {
+              $auto_match = $accommodations !== ''
+                  ? mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions_for_roommate )
+                  : null;
+
               $roommate_rows[] = [
                   'entry_id'       => $sub_id,
                   'name'           => $name ?: '—',
@@ -1782,7 +1791,7 @@ function mancamp_admin_page() {
       }
       ?>
       <?php if ( empty( $roommate_rows ) ) : ?>
-        <p style="color:#646970;">No accommodations requests found yet. Registrants who fill in the "accommodations" field will appear here.</p>
+        <p style="color:#646970;">No registrations found. Check that the Form ID is set correctly in Settings → Man Camp Registration.</p>
       <?php else : ?>
         <table class="widefat striped">
           <thead>
@@ -1884,12 +1893,21 @@ function mancamp_roommate_page() {
                 }
             }
         }
-        $accommodations = sanitize_textarea_field( $fd['accommodations'] ?? '' );
+        $accommodations = sanitize_textarea_field(
+            $fd['accommodations'] ??
+            $fd['description'] ??
+            $fd['special_accommodations'] ??
+            $fd['roommate_request'] ??
+            ''
+        );
         if ( $sub_id > 0 ) {
             $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
         }
-        if ( $accommodations !== '' && $sub_id > 0 ) {
-            $auto_match = mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions );
+        if ( $sub_id > 0 ) {
+            $auto_match = $accommodations !== ''
+                ? mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions )
+                : null;
+
             $roommate_rows[] = [
                 'entry_id'       => $sub_id,
                 'name'           => $name ?: '—',
@@ -1903,7 +1921,7 @@ function mancamp_roommate_page() {
 
     <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;">
     <?php if ( empty( $roommate_rows ) ) : ?>
-      <p style="color:#646970;">No accommodations requests found yet. Registrants who fill in the "accommodations" field will appear here.</p>
+      <p style="color:#646970;">No registrations found. Check that the Form ID is set correctly in Settings → Man Camp Registration.</p>
     <?php else : ?>
       <table class="widefat striped">
         <thead>

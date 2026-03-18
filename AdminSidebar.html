@@ -346,6 +346,32 @@
         </div>
         <div class="card-body">
           <div id="roommateStats"></div>
+
+          <!-- Manual Link Panel -->
+          <div style="background:#f0f7ff;border:1px solid #b3d4f5;border-radius:8px;padding:12px;margin-bottom:12px;">
+            <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Link Two Registrants as Roommates</div>
+            <div class="form-row two" style="margin-bottom:8px;">
+              <div>
+                <label class="label">Entry ID A</label>
+                <input id="linkEntryIdA" class="input" type="text" placeholder="e.g. 42">
+              </div>
+              <div>
+                <label class="label">Entry ID B</label>
+                <input id="linkEntryIdB" class="input" type="text" placeholder="e.g. 57">
+              </div>
+            </div>
+            <button class="btn btn-primary btn-full" onclick="doLinkRoommates()">Link Roommates</button>
+            <div id="linkStatus" class="status"></div>
+          </div>
+
+          <!-- Filter Toggles -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+            <button id="rmFilterAll"         class="btn btn-secondary" onclick="setRoommateFilter('all')">All</button>
+            <button id="rmFilterNeedsReview" class="btn btn-secondary" onclick="setRoommateFilter('requested')">Needs Review</button>
+            <button id="rmFilterMatched"     class="btn btn-secondary" onclick="setRoommateFilter('matched')">Matched</button>
+            <button id="rmFilterNoRequest"   class="btn btn-secondary" onclick="setRoommateFilter('none')">No Request</button>
+          </div>
+
           <div id="roommateList"></div>
           <div id="roommateStatus" class="status"></div>
         </div>
@@ -946,9 +972,35 @@
       document.getElementById('queueList').innerHTML = html + '</div>';
     }
 
+    var _roommateAllData = null;
+    var _roommateFilter  = 'all';
+    var _roommateNoRequestRows = [];
+
     function openRoommatePanel() {
       showPanel('roommates');
+      _roommateFilter = 'all';
+      highlightRoommateFilter('all');
       loadRoommateRequests();
+    }
+
+    function setRoommateFilter(filter) {
+      _roommateFilter = filter;
+      highlightRoommateFilter(filter);
+      if (_roommateAllData) {
+        renderRoommateRequests(_roommateAllData);
+      }
+    }
+
+    function highlightRoommateFilter(active) {
+      ['rmFilterAll','rmFilterNeedsReview','rmFilterMatched','rmFilterNoRequest'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) {
+          el.className = 'btn btn-secondary';
+        }
+      });
+      var map = { all: 'rmFilterAll', requested: 'rmFilterNeedsReview', matched: 'rmFilterMatched', none: 'rmFilterNoRequest' };
+      var activeEl = document.getElementById(map[active]);
+      if (activeEl) activeEl.className = 'btn btn-primary';
     }
 
     function loadRoommateRequests() {
@@ -956,6 +1008,8 @@
       google.script.run
         .withSuccessHandler(function(data) {
           if (data.error) return setStatus('roommateStatus', 'error', data.error);
+          _roommateAllData = data;
+          _roommateNoRequestRows = data.noRequestRows || [];
           renderRoommateRequests(data);
         })
         .withFailureHandler(function(err) {
@@ -965,44 +1019,117 @@
     }
 
     function renderRoommateRequests(data) {
-      var rows = data.rows || [];
-      var total = data.total || 0;
-      var matched = data.matched || 0;
-      var unmatched = data.unmatched || 0;
+      var allRows         = data.rows || [];
+      var total           = data.total || 0;
+      var matched         = data.matched || 0;
+      var unmatched       = data.unmatched || 0;
+      var noRequestRows   = _roommateNoRequestRows || [];
 
       document.getElementById('roommateStats').innerHTML =
         '<div class="stats-grid">' +
           statBox(total, 'Total Requests') +
           statBox(matched, 'Matched') +
-          statBox(unmatched, 'Unmatched') +
-          statBox(total - matched - unmatched, 'Other') +
+          statBox(unmatched, 'Needs Review') +
+          statBox(noRequestRows.length, 'No Request') +
         '</div>';
 
+      // Apply filter
+      var rows;
+      if (_roommateFilter === 'requested') {
+        rows = allRows.filter(function(r) { return String(r.matchStatus || '').toLowerCase() === 'requested'; });
+      } else if (_roommateFilter === 'matched') {
+        rows = allRows.filter(function(r) { return String(r.matchStatus || '').toLowerCase() === 'matched'; });
+      } else if (_roommateFilter === 'none') {
+        rows = noRequestRows;
+      } else {
+        rows = allRows;
+      }
+
       if (!rows.length) {
-        document.getElementById('roommateList').innerHTML = '<div class="empty">No roommate requests on file.</div>';
+        document.getElementById('roommateList').innerHTML = '<div class="empty">No records for this filter.</div>';
         return;
       }
 
       var html = '<div class="roster-list">';
       rows.forEach(function(item) {
-        var isUnmatched = String(item.matchStatus || '').toLowerCase() === 'requested';
-        var isMatched   = String(item.matchStatus || '').toLowerCase() === 'matched';
-        var icon = isUnmatched ? '⚠️' : (isMatched ? '✅' : '');
-        var statusClass = isUnmatched ? 'pill-warn' : (isMatched ? 'pill-ok' : 'pill-info');
-        var statusLabel = isUnmatched ? 'Unmatched' : (isMatched ? 'Matched' : esc(item.matchStatus || ''));
+        var status      = String(item.matchStatus || '').toLowerCase();
+        var isRequested = status === 'requested';
+        var isMatched   = status === 'matched';
+        var isNone      = status === '' || status === 'none';
+        var icon        = isRequested ? '⚠️ ' : (isMatched ? '✅ ' : '');
+        var statusClass = isRequested ? 'pill-warn' : (isMatched ? 'pill-ok' : 'pill-info');
+        var statusLabel = isRequested ? 'Needs Review' : (isMatched ? 'Matched' : 'No Request');
 
         html += '<div class="queue-item">' +
-          '<div class="result-label">' + icon + ' ' + esc(item.registrantName || item.registrationId) +
+          '<div class="result-label">' + icon + esc(item.registrantName || item.registrationId) +
             '<span class="pill ' + statusClass + '">' + statusLabel + '</span>' +
           '</div>' +
-          '<div class="result-sub" style="margin-top:4px;font-style:italic;">&ldquo;' + esc(item.requestText) + '&rdquo;</div>' +
+          '<div class="result-sub">FF Entry: ' + esc(item.entryId || '') + '</div>' +
+          (item.requestText
+            ? '<div class="result-sub" style="margin-top:4px;font-style:italic;">&ldquo;' + esc(item.requestText) + '&rdquo;</div>'
+            : '') +
           (item.matchedRegistrantName
             ? '<div class="tiny" style="margin-top:2px;">Matched to: ' + esc(item.matchedRegistrantName) + '</div>'
             : '') +
-          '<button class="btn btn-secondary btn-full" style="margin-top:6px" onclick="loadRegistrationDetails(\'' + esc(item.registrationId) + '\')">Open Registration</button>' +
+          '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">' +
+            '<button class="btn btn-secondary" style="flex:1" onclick="loadRegistrationDetails(\'' + esc(item.registrationId) + '\')">Open Registration</button>' +
+          '</div>' +
+          (!isNone ? buildSaveMatchDropdown_(item, allRows) : '') +
           '</div>';
       });
       document.getElementById('roommateList').innerHTML = html + '</div>';
+    }
+
+    function buildSaveMatchDropdown_(item, allRows) {
+      var options = '<option value="">— link to —</option>';
+      allRows.forEach(function(r) {
+        if (r.entryId !== item.entryId) {
+          options += '<option value="' + esc(r.entryId) + '"' +
+            (item.matchedRegistrantName && r.registrantName === item.matchedRegistrantName ? ' selected' : '') +
+            '>' + esc(r.registrantName || r.entryId) + ' (' + esc(r.entryId) + ')</option>';
+        }
+      });
+      return '<div style="display:flex;gap:6px;margin-top:6px;">' +
+        '<select id="matchDrop_' + esc(item.entryId) + '" class="select" style="flex:1">' + options + '</select>' +
+        '<button class="btn btn-primary" onclick="doSaveMatchOverride(\'' + esc(item.entryId) + '\')">Save Match</button>' +
+        '</div>';
+    }
+
+    function doSaveMatchOverride(entryIdA) {
+      var sel = document.getElementById('matchDrop_' + entryIdA);
+      if (!sel) return;
+      var entryIdB = sel.value;
+      if (!entryIdB) return setStatus('roommateStatus', 'info', 'Please select a registrant to link to.');
+      setStatus('roommateStatus', 'info', 'Linking…');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (!result.success) return setStatus('roommateStatus', 'error', result.error || 'Link failed.');
+          setStatus('roommateStatus', 'success', '✅ Linked ' + esc(result.nameA) + ' ↔ ' + esc(result.nameB));
+          loadRoommateRequests();
+        })
+        .withFailureHandler(function(err) {
+          setStatus('roommateStatus', 'error', 'Error: ' + err.message);
+        })
+        .manuallyLinkRoommates(entryIdA, entryIdB);
+    }
+
+    function doLinkRoommates() {
+      var idA = (document.getElementById('linkEntryIdA').value || '').trim();
+      var idB = (document.getElementById('linkEntryIdB').value || '').trim();
+      if (!idA || !idB) return setStatus('linkStatus', 'info', 'Enter both Entry IDs.');
+      setStatus('linkStatus', 'info', 'Linking…');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (!result.success) return setStatus('linkStatus', 'error', result.error || 'Link failed.');
+          setStatus('linkStatus', 'success', '✅ Linked: ' + esc(result.nameA) + ' ↔ ' + esc(result.nameB));
+          document.getElementById('linkEntryIdA').value = '';
+          document.getElementById('linkEntryIdB').value = '';
+          loadRoommateRequests();
+        })
+        .withFailureHandler(function(err) {
+          setStatus('linkStatus', 'error', 'Error: ' + err.message);
+        })
+        .manuallyLinkRoommates(idA, idB);
     }
 
     function runSystemTool(functionName) {

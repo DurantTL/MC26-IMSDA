@@ -1252,11 +1252,9 @@ function adminPanelGetRoommateRequests() {
   try {
     const ss    = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
-    if (!sheet || sheet.getLastRow() < 2) {
-      return { rows: [], total: 0, matched: 0, unmatched: 0 };
-    }
+    const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
 
-    const allRows = readSheetObjects_(sheet);
+    const allRows = (sheet && sheet.getLastRow() > 1) ? readSheetObjects_(sheet) : [];
     const active  = allRows.filter(function(r) {
       const status = String(r.match_status || '').toLowerCase();
       return status === 'requested' || status === 'matched';
@@ -1279,8 +1277,288 @@ function adminPanelGetRoommateRequests() {
       };
     });
 
-    return { rows: rows, total: active.length, matched: matched, unmatched: unmatched };
+    // Build noRequestRows: registrations with no accommodations text (not in RoommateAssignments)
+    const noRequestRows = [];
+    if (regSheet && regSheet.getLastRow() > 1) {
+      const existingEntryIds = new Set(allRows.map(function(r) { return String(r.entry_id || '').trim(); }));
+      const regRows = readSheetObjects_(regSheet);
+      regRows.forEach(function(reg) {
+        const requestText = String(reg['roommate_request_text'] || '').trim();
+        const entryId     = String(reg['fluent_form_entry_id'] || '').trim();
+        const regId       = String(reg['registration_id'] || '').trim();
+        if (!requestText && regId && !existingEntryIds.has(entryId)) {
+          noRequestRows.push({
+            registrationId:        regId,
+            entryId:               entryId,
+            registrantName:        String(reg['registrant_name'] || '').trim(),
+            registrantEmail:       String(reg['registrant_email'] || reg['email'] || '').trim(),
+            requestText:           '',
+            matchedRegistrationId: '',
+            matchedRegistrantName: '',
+            matchStatus:           'none',
+            overrideByAdmin:       false
+          });
+        }
+      });
+    }
+
+    return {
+      rows:           rows,
+      total:          active.length,
+      matched:        matched,
+      unmatched:      unmatched,
+      noRequestRows:  noRequestRows
+    };
   } catch (e) {
-    return { error: e.message, rows: [], total: 0, matched: 0, unmatched: 0 };
+    return { error: e.message, rows: [], total: 0, matched: 0, unmatched: 0, noRequestRows: [] };
   }
+}
+
+
+// ============================================================
+// SECTION 9 — ROOMMATE TOOLS
+// ============================================================
+
+/**
+ * Scans every row in Registrations and backfills a RoommateAssignments row
+ * for any registration that has a non-empty roommate_request_text and does
+ * not already have a RoommateAssignments row for its entry_id.
+ *
+ * Fully idempotent — safe to run multiple times on a live sheet.
+ * Existing rows are never overwritten; only new rows are appended.
+ * Rows with empty roommate_request_text are silently skipped.
+ *
+ * Run via: Man Camp System → Roommate Tools → Backfill Roommate Requests
+ */
+function backfillRoommateRequests() {
+  const ss      = SpreadsheetApp.getActiveSpreadsheet();
+  const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+  const rmSheet  = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+
+  if (!regSheet) {
+    SpreadsheetApp.getUi().alert('Registrations sheet not found. Run Setup Sheets first.');
+    return;
+  }
+  if (!rmSheet) {
+    SpreadsheetApp.getUi().alert('RoommateAssignments sheet not found. Run Setup Sheets first.');
+    return;
+  }
+
+  ensureSheetHeaders_(rmSheet, getRoommateAssignmentsHeaders_());
+
+  const regRows = readSheetObjects_(regSheet);
+
+  // Build a set of entry_ids already in RoommateAssignments
+  const existingEntryIds = new Set();
+  if (rmSheet.getLastRow() > 1) {
+    const entryIdColNum = getColumnNumber_(rmSheet, 'entry_id');
+    if (entryIdColNum > 0) {
+      rmSheet.getRange(2, entryIdColNum, rmSheet.getLastRow() - 1, 1)
+        .getValues().flat()
+        .forEach(function(v) { if (v) existingEntryIds.add(String(v).trim()); });
+    }
+  }
+
+  let processed = 0;
+  let skipped   = 0;
+  let written   = 0;
+
+  regRows.forEach(function(reg) {
+    processed++;
+    const entryId      = String(reg['fluent_form_entry_id'] || '').trim();
+    const requestText  = String(reg['roommate_request_text'] || '').trim();
+    const matchStatus  = String(reg['roommate_match_status'] || 'none').trim().toLowerCase();
+
+    if (!requestText || matchStatus === 'none') {
+      skipped++;
+      return;
+    }
+
+    if (entryId && existingEntryIds.has(entryId)) {
+      skipped++;
+      return;
+    }
+
+    // Look up matched_registrant_name if a match ID is stored
+    let matchedName = '';
+    const matchedId = String(reg['roommate_matched_id'] || '').trim();
+    if (matchedId) {
+      const entryIdColNum = getColumnNumber_(regSheet, 'fluent_form_entry_id');
+      const nameColNum    = getColumnNumber_(regSheet, 'registrant_name');
+      if (entryIdColNum > 0 && nameColNum > 0 && regSheet.getLastRow() > 1) {
+        const entryIds   = regSheet.getRange(2, entryIdColNum, regSheet.getLastRow() - 1, 1).getValues().flat();
+        const matchIndex = entryIds.indexOf(matchedId);
+        if (matchIndex >= 0) {
+          matchedName = String(regSheet.getRange(matchIndex + 2, nameColNum).getValue() || '');
+        }
+      }
+    }
+
+    const now = new Date();
+    appendRowFromObject_(rmSheet, {
+      registration_id:         String(reg['registration_id'] || ''),
+      entry_id:                entryId,
+      registrant_name:         String(reg['registrant_name'] || ''),
+      registrant_email:        String(reg['registrant_email'] || reg['email'] || ''),
+      request_text:            requestText,
+      matched_registration_id: matchedId,
+      matched_registrant_name: matchedName,
+      match_status:            matchStatus,
+      override_by_admin:       false,
+      created_at:              now,
+      updated_at:              now
+    });
+
+    if (entryId) existingEntryIds.add(entryId);
+    written++;
+  });
+
+  const summary = 'Backfill complete.\n\nProcessed: ' + processed + '\nWritten:   ' + written + '\nSkipped:   ' + skipped;
+  Logger.log('backfillRoommateRequests — ' + summary.replace(/\n/g, ' | '));
+  SpreadsheetApp.getUi().alert('✅ ' + summary);
+}
+
+/**
+ * Bidirectionally links two registrations as roommates.
+ * Updates RoommateAssignments for both entry IDs (creates rows if missing).
+ * Sets override_by_admin = TRUE on both rows.
+ * Also updates roommate_matched_id and roommate_match_status in Registrations.
+ *
+ * @param  {string} entryIdA
+ * @param  {string} entryIdB
+ * @returns {Object} { success: true, nameA, nameB } or { success: false, error }
+ */
+function manuallyLinkRoommates(entryIdA, entryIdB) {
+  try {
+    const ss      = SpreadsheetApp.getActiveSpreadsheet();
+    const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+    const rmSheet  = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+
+    if (!regSheet) return { success: false, error: 'Registrations sheet not found.' };
+    if (!rmSheet)  return { success: false, error: 'RoommateAssignments sheet not found.' };
+
+    ensureSheetHeaders_(rmSheet, getRoommateAssignmentsHeaders_());
+
+    const entryIdA_ = String(entryIdA || '').trim();
+    const entryIdB_ = String(entryIdB || '').trim();
+
+    if (!entryIdA_ || !entryIdB_) {
+      return { success: false, error: 'Both Entry ID A and Entry ID B are required.' };
+    }
+    if (entryIdA_ === entryIdB_) {
+      return { success: false, error: 'Entry IDs must be different.' };
+    }
+
+    // --- Look up both registrations ---
+    const entryIdColNum  = getColumnNumber_(regSheet, 'fluent_form_entry_id');
+    const nameColNum     = getColumnNumber_(regSheet, 'registrant_name');
+    const emailColNum    = getColumnNumber_(regSheet, 'registrant_email');
+    const regIdColNum    = getColumnNumber_(regSheet, 'registration_id');
+    const rmTextColNum   = getColumnNumber_(regSheet, 'roommate_request_text');
+    const rmMatchedIdCol = getColumnNumber_(regSheet, 'roommate_matched_id');
+    const rmStatusColNum = getColumnNumber_(regSheet, 'roommate_match_status');
+
+    if (entryIdColNum < 0 || regIdColNum < 0) {
+      return { success: false, error: 'Required columns not found in Registrations sheet.' };
+    }
+
+    const lastRow  = regSheet.getLastRow();
+    const entryIds = lastRow > 1
+      ? regSheet.getRange(2, entryIdColNum, lastRow - 1, 1).getValues().flat()
+      : [];
+
+    const idxA = entryIds.indexOf(entryIdA_);
+    const idxB = entryIds.indexOf(entryIdB_);
+
+    if (idxA < 0) return { success: false, error: 'Entry ID ' + entryIdA_ + ' not found in Registrations.' };
+    if (idxB < 0) return { success: false, error: 'Entry ID ' + entryIdB_ + ' not found in Registrations.' };
+
+    const rowA = idxA + 2;
+    const rowB = idxB + 2;
+
+    const regA = readRowAsObject_(regSheet, rowA);
+    const regB = readRowAsObject_(regSheet, rowB);
+
+    const nameA = String(regA['registrant_name'] || '').trim() || entryIdA_;
+    const nameB = String(regB['registrant_name'] || '').trim() || entryIdB_;
+    const regIdA = String(regA['registration_id'] || '');
+    const regIdB = String(regB['registration_id'] || '');
+
+    const now = new Date();
+
+    // --- Update Registrations sheet for A (points to B) ---
+    if (rmMatchedIdCol > 0) regSheet.getRange(rowA, rmMatchedIdCol).setValue(entryIdB_);
+    if (rmStatusColNum > 0) regSheet.getRange(rowA, rmStatusColNum).setValue('matched');
+
+    // --- Update Registrations sheet for B (points to A) ---
+    if (rmMatchedIdCol > 0) regSheet.getRange(rowB, rmMatchedIdCol).setValue(entryIdA_);
+    if (rmStatusColNum > 0) regSheet.getRange(rowB, rmStatusColNum).setValue('matched');
+
+    // --- Upsert RoommateAssignments for A ---
+    upsertRoommateAssignmentsRow_(rmSheet, {
+      registration_id:         regIdA,
+      entry_id:                entryIdA_,
+      registrant_name:         nameA,
+      registrant_email:        String(regA['registrant_email'] || regA['email'] || ''),
+      request_text:            String(regA['roommate_request_text'] || ''),
+      matched_registration_id: regIdB,
+      matched_registrant_name: nameB,
+      match_status:            'matched',
+      override_by_admin:       true,
+      updated_at:              now
+    });
+
+    // --- Upsert RoommateAssignments for B ---
+    upsertRoommateAssignmentsRow_(rmSheet, {
+      registration_id:         regIdB,
+      entry_id:                entryIdB_,
+      registrant_name:         nameB,
+      registrant_email:        String(regB['registrant_email'] || regB['email'] || ''),
+      request_text:            String(regB['roommate_request_text'] || ''),
+      matched_registration_id: regIdA,
+      matched_registrant_name: nameA,
+      match_status:            'matched',
+      override_by_admin:       true,
+      updated_at:              now
+    });
+
+    Logger.log('manuallyLinkRoommates: linked ' + entryIdA_ + ' (' + nameA + ') <-> ' + entryIdB_ + ' (' + nameB + ')');
+    return { success: true, nameA: nameA, nameB: nameB };
+
+  } catch (err) {
+    Logger.log('manuallyLinkRoommates error: ' + err.toString());
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * Creates or updates a single row in RoommateAssignments keyed on entry_id.
+ * Preserves created_at from the existing row if one is found.
+ * Sets override_by_admin based on the supplied rowObj value.
+ *
+ * @param {Sheet}  rmSheet
+ * @param {Object} rowObj — must include entry_id
+ */
+function upsertRoommateAssignmentsRow_(rmSheet, rowObj) {
+  const now     = new Date();
+  const entryId = String(rowObj.entry_id || '').trim();
+
+  if (entryId && rmSheet.getLastRow() > 1) {
+    const entryIdColNum = getColumnNumber_(rmSheet, 'entry_id');
+    if (entryIdColNum > 0) {
+      const existing  = rmSheet.getRange(2, entryIdColNum, rmSheet.getLastRow() - 1, 1).getValues().flat();
+      const rowIndex  = existing.indexOf(entryId);
+      if (rowIndex >= 0) {
+        const existingRow = readRowAsObject_(rmSheet, rowIndex + 2);
+        rowObj.created_at = existingRow['created_at'] || now;
+        updateRowFromObject_(rmSheet, rowIndex + 2, rowObj);
+        return;
+      }
+    }
+  }
+
+  // Row not found — append
+  rowObj.created_at = rowObj.created_at || now;
+  rowObj.updated_at = rowObj.updated_at || now;
+  appendRowFromObject_(rmSheet, rowObj);
 }

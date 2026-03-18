@@ -4,7 +4,7 @@
  * Plugin URI:  https://imsda.org
  * Description: Bridges Fluent Forms Man Camp registration submissions to the
  *              Google Apps Script backend and provides the Man Camp attendee widget.
- * Version:     2.1.0
+ * Version:     2.2.0
  * Author:      Iowa-Missouri Conference of Seventh-day Adventists
  * Author URI:  https://imsda.org
  * License:     GPL-2.0+

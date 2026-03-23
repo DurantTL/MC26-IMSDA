@@ -590,12 +590,28 @@
     }
 
     function renderManualUpdateSection(data) {
+      var lodgingPrefOptions = [
+        ['shared_cabin_connected', 'Shared Cabin - Connected Restroom'],
+        ['shared_cabin_detached', 'Shared Cabin - Detached Restroom/Shower'],
+        ['rv_hookups', 'RV Hookups'],
+        ['tent_no_hookups', 'Tent Camping - No Hookups'],
+        ['sabbath_attendance_only', 'Sabbath Attendance Only']
+      ];
+      var lodgingPrefHtml = lodgingPrefOptions.map(function(opt) {
+        return '<option value="' + opt[0] + '"' + (data.lodgingPreference === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+      }).join('');
       return '<div class="section-title">Manual Lodging Update</div>' +
-        '<div class="tiny">Update registration-level lodging status and attendee bunk details. TODO: bed-by-bed cabin mapping is not implemented yet.</div>' +
-        '<div class="form-row two" style="margin-top:8px"><div><label class="label">Registration Status</label><select id="manualLodgingStatus" class="select">' +
-          optionList(['assigned','waitlist','pending','manual_review'], data.lodgingStatus) +
-        '</select></div><div><label class="label">Assigned Area</label><input id="manualAssignedArea" class="input" type="text" value="' + esc(data.assignedLodgingArea || '') + '"></div></div>' +
-        '<label class="label">Notes</label><input id="manualNotes" class="input" type="text" value="' + esc(data.notes || '') + '">' +
+        '<div class="tiny">Update registration-level lodging and per-attendee details. Cost will be recalculated automatically on save.</div>' +
+        '<div class="form-row two" style="margin-top:8px">' +
+          '<div><label class="label">Registration Lodging Preference</label><select id="manualLodgingPreference" class="select">' + lodgingPrefHtml + '</select></div>' +
+          '<div><label class="label">Registration Status</label><select id="manualLodgingStatus" class="select">' +
+            optionList(['assigned','waitlist','pending','manual_review'], data.lodgingStatus) +
+          '</select></div>' +
+        '</div>' +
+        '<div class="form-row two">' +
+          '<div><label class="label">Assigned Area</label><input id="manualAssignedArea" class="input" type="text" value="' + esc(data.assignedLodgingArea || '') + '"></div>' +
+          '<div><label class="label">Notes</label><input id="manualNotes" class="input" type="text" value="' + esc(data.notes || '') + '"></div>' +
+        '</div>' +
         renderRosterEditor(data.roster || []) +
         '<button class="btn btn-success btn-full" onclick="saveLodgingEdits()">Save Lodging Updates</button>';
     }
@@ -648,20 +664,32 @@
 
     function renderRosterEditor(roster) {
       if (!roster.length) return '<div class="empty" style="margin-top:8px">No people to edit.</div>';
+      var lodgingPrefOptions = [
+        ['shared_cabin_connected', 'Cabin - Connected'],
+        ['shared_cabin_detached', 'Cabin - Detached'],
+        ['rv_hookups', 'RV Hookups'],
+        ['tent_no_hookups', 'Tent'],
+        ['sabbath_attendance_only', 'Sabbath Only']
+      ];
       var html = '<div class="roster-list" style="margin-top:8px">';
       roster.forEach(function(person, index) {
+        var prefHtml = lodgingPrefOptions.map(function(opt) {
+          return '<option value="' + opt[0] + '"' + (person.lodgingPreference === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+        }).join('');
         html += '<div class="roster-row"><div class="roster-name">' + esc(person.name) + '</div>' +
           '<div class="roster-meta">' + esc(buildPersonMeta(person)) + '</div>' +
-          '<div class="form-row two" style="margin-top:8px"><div><label class="label">Status</label><select id="edit-status-' + index + '" class="select">' +
+          '<div class="form-row two" style="margin-top:8px"><div><label class="label">Lodging Preference</label><select id="edit-preference-' + index + '" class="select">' + prefHtml + '</select></div>' +
+          '<div><label class="label">Status</label><select id="edit-status-' + index + '" class="select">' +
             optionList(['assigned','waitlist','pending','manual_review'], person.lodgingStatus) +
-          '</select></div><div><label class="label">Bunk Type</label><select id="edit-bunk-' + index + '" class="select">' +
-            optionList(['bottom','top_guardian_child','rv','tent','day_only','none'], person.bunkType) +
           '</select></div></div>' +
-          '<div class="form-row two"><div><label class="label">Assigned Area</label><input id="edit-area-' + index + '" class="input" type="text" value="' + esc(person.assignedLodgingArea || '') + '"></div>' +
-          '<div><label class="label">Guardian Link Key</label><input id="edit-link-' + index + '" class="input" type="text" value="' + esc(person.guardianLinkKey || '') + '"></div></div>' +
-          '<div class="form-row two"><div><label class="label">Guardian Registration ID</label><input id="edit-guardian-reg-' + index + '" class="input" type="text" value="' + esc(person.guardianRegistrationId || '') + '"></div>' +
-          '<div><label class="label">Notes</label><input id="edit-notes-' + index + '" class="input" type="text" value="' + esc(person.notes || '') + '"></div></div>' +
-          '<label class="tiny"><input id="edit-guardian-' + index + '" type="checkbox"' + (person.isGuardian ? ' checked' : '') + '> Guardian</label>' +
+          '<div class="form-row two"><div><label class="label">Bunk Type</label><select id="edit-bunk-' + index + '" class="select">' +
+            optionList(['bottom','top_guardian_child','rv','tent','day_only','none'], person.bunkType) +
+          '</select></div>' +
+          '<div><label class="label">Assigned Area</label><input id="edit-area-' + index + '" class="input" type="text" value="' + esc(person.assignedLodgingArea || '') + '"></div></div>' +
+          '<div class="form-row two"><div><label class="label">Guardian Link Key</label><input id="edit-link-' + index + '" class="input" type="text" value="' + esc(person.guardianLinkKey || '') + '"></div>' +
+          '<div><label class="label">Guardian Registration ID</label><input id="edit-guardian-reg-' + index + '" class="input" type="text" value="' + esc(person.guardianRegistrationId || '') + '"></div></div>' +
+          '<div class="form-row two"><div><label class="label">Notes</label><input id="edit-notes-' + index + '" class="input" type="text" value="' + esc(person.notes || '') + '"></div>' +
+          '<div style="display:flex;align-items:flex-end;padding-bottom:4px"><label class="tiny"><input id="edit-guardian-' + index + '" type="checkbox"' + (person.isGuardian ? ' checked' : '') + '> Guardian</label></div></div>' +
           '<input id="edit-attendee-' + index + '" type="hidden" value="' + esc(person.attendeeId) + '">' +
           '</div>';
       });
@@ -770,6 +798,7 @@
       var attendees = (currentRegistration.roster || []).map(function(person, index) {
         return {
           attendeeId: document.getElementById('edit-attendee-' + index).value,
+          lodgingPreference: document.getElementById('edit-preference-' + index).value,
           lodgingStatus: document.getElementById('edit-status-' + index).value,
           bunkType: document.getElementById('edit-bunk-' + index).value,
           assignedLodgingArea: document.getElementById('edit-area-' + index).value.trim(),
@@ -791,6 +820,7 @@
           setStatus('detailsStatus', 'error', 'Error: ' + err.message);
         })
         .adminPanelUpdateLodgingDetails(currentRegId, {
+          lodgingPreference: document.getElementById('manualLodgingPreference').value,
           lodgingStatus: document.getElementById('manualLodgingStatus').value,
           assignedLodgingArea: document.getElementById('manualAssignedArea').value.trim(),
           notes: document.getElementById('manualNotes').value.trim(),

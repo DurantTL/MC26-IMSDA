@@ -400,10 +400,56 @@ function adminPanelUpdateLodgingDetails(registrationId, payload) {
     updateSummaryRowsForRegistration_(ss, assigned);
     refreshLodgingInventorySheet_(ss);
 
-    return { success: true, message: 'Lodging details updated for ' + registrationId + '.' };
+    try {
+      const newTotal = recalculateRegistrationTotal_(updatedPeople, registrationPreference);
+      const totalCol = getColumnNumber_(regSheet, 'estimated_total');
+      if (totalCol > 0) {
+        regSheet.getRange(regRowIndex, totalCol).setValue(newTotal);
+      }
+      const regOption = getRegistrationOptionByKey_(registrationPreference);
+      if (regOption) {
+        const optionPriceCol = getColumnNumber_(regSheet, 'option_price');
+        if (optionPriceCol > 0) regSheet.getRange(regRowIndex, optionPriceCol).setValue(regOption.price || 0);
+        const lodgingOptionKeyCol = getColumnNumber_(regSheet, 'lodging_option_key');
+        if (lodgingOptionKeyCol > 0) regSheet.getRange(regRowIndex, lodgingOptionKeyCol).setValue(regOption.key || '');
+        const lodgingOptionLabelCol = getColumnNumber_(regSheet, 'lodging_option_label');
+        if (lodgingOptionLabelCol > 0) regSheet.getRange(regRowIndex, lodgingOptionLabelCol).setValue(regOption.label || '');
+      }
+    } catch (costErr) {
+      Logger.log('adminPanelUpdateLodgingDetails: non-fatal cost recalculation error: ' + costErr);
+    }
+
+    try {
+      refreshShirtInventorySheet_(ss);
+    } catch (shirtErr) {
+      Logger.log('adminPanelUpdateLodgingDetails: non-fatal shirt inventory refresh error: ' + shirtErr);
+    }
+
+    return { success: true, message: 'Lodging details updated for ' + registrationId + '. Total recalculated.' };
   } catch (e) {
     return { success: false, message: 'Error: ' + e.message };
   }
+}
+
+function recalculateRegistrationTotal_(people, registrationPreference) {
+  const sabbathOnlyPrice = Number((CONFIG.registrationOptions.sabbath_attendance_only || {}).price) || 70;
+  const defaultOption = getRegistrationOptionByKey_(registrationPreference);
+  const defaultPrice = defaultOption ? Number(defaultOption.price) || 0 : 0;
+
+  let total = 0;
+  (people || []).forEach(person => {
+    if (String(person.volunteer || '').toLowerCase() === 'yes') return;
+    if (person.isVolunteer === true) return;
+    const personOption = getRegistrationOptionByKey_(person.lodgingPreference || registrationPreference);
+    const att = String(person.attendanceType || person.attendance_type || '').toLowerCase();
+    const pref = String(person.lodgingPreference || '').toLowerCase();
+    if (att === 'sabbath_only' || att === 'sabbath_attendance_only' || pref === 'sabbath_attendance_only') {
+      total += sabbathOnlyPrice;
+    } else {
+      total += personOption ? Number(personOption.price) || defaultPrice : defaultPrice;
+    }
+  });
+  return total;
 }
 
 function buildAdminRosterPerson_(person) {

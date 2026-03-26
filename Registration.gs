@@ -538,12 +538,26 @@ function normalizeRegistrationSubmission_(data) {
 
   const primary = normalizePrimaryContact_(data, peopleInput);
   const registrationLabel = deriveRegistrationLabel_(primary, data);
+
+  // Extract payment totals early so they can be passed into normalizeLodgingPreference_
+  // as context for the price-based fallback when the submitted lodging key is absent.
+  const registrationTotal = Number(
+    data.frontend_total || data.registrationTotal || data.registration_total || 0
+  );
+  const attendeeCount = peopleInput.filter(function(p) {
+    return String(p.volunteer || '').toLowerCase() !== 'yes';
+  }).length || peopleInput.length;
+  const lodgingPriceContext = registrationTotal > 0
+    ? { registrationTotal: registrationTotal, attendeeCount: attendeeCount }
+    : null;
+
   const lodgingPreference = normalizeLodgingPreference_(
     data.lodging_option_key
       || data.lodging_preference
       || (data.lodgingRequest && data.lodgingRequest.type)
       || data.lodgingPreference
-      || ''
+      || '',
+    lodgingPriceContext
   );
   const option = getRegistrationOptionByKey_(lodgingPreference);
   const programType = normalizeProgramType_(data.program_type || data.programType || '');
@@ -805,7 +819,17 @@ function normalizeAgeGroup_(person) {
   return !isNaN(age) && age < CONFIG.ageRules.adultMinAge ? 'child' : 'adult';
 }
 
-function normalizeLodgingPreference_(value) {
+/**
+ * Normalizes a raw lodging preference string to a canonical key.
+ *
+ * @param {string}      value   — raw input string
+ * @param {Object|null} context — optional: { registrationTotal, attendeeCount }
+ *                                When provided and the string value is empty or
+ *                                unresolvable, falls back to inferring the key
+ *                                from per-person price rather than defaulting to
+ *                                tent_no_hookups.
+ */
+function normalizeLodgingPreference_(value, context) {
   const raw = String(value || '').trim().toLowerCase();
   const valid = CONFIG.lodging.validation.validPreferences;
   if (valid.includes(raw)) return raw;
@@ -814,6 +838,14 @@ function normalizeLodgingPreference_(value) {
   if (raw === 'rv') return 'rv_hookups';
   if (raw === 'tent') return 'tent_no_hookups';
   if (raw === 'sabbath_only' || raw === 'sabbath attendance only') return 'sabbath_attendance_only';
+
+  // Price-based fallback of last resort: use per-person price to infer key
+  if (context && Number(context.registrationTotal) > 0 && Number(context.attendeeCount) > 0) {
+    const perPerson = Number(context.registrationTotal) / Number(context.attendeeCount);
+    const inferred = lodgingKeyFromPerPersonPrice_(perPerson);
+    if (inferred) return inferred;
+  }
+
   return raw || 'tent_no_hookups';
 }
 
@@ -971,6 +1003,8 @@ function applyValidationFlagsToAssignedRegistration_(assigned, validation) {
 
 /**
  * Sets the 'processed' column on the matching RAW sheet row to TRUE.
+ * Tries multiple header-name variants before giving up; if the column
+ * doesn't exist at all it appends it to the header row then writes the value.
  *
  * @param {Spreadsheet} ss
  * @param {string|number} entryId — Fluent Forms entry ID
@@ -979,19 +1013,108 @@ function markRawRowProcessed_(ss, entryId) {
   const sheet = ss.getSheetByName(CONFIG.sheets.raw);
   if (!sheet) return;
 
-  // Use dynamic column mapping so column order changes don't break this
-  const entryIdColNum   = getColumnNumber_(sheet, 'entry_id');
-  const processedColNum = getColumnNumber_(sheet, 'processed');
-  if (entryIdColNum < 0 || processedColNum < 0) return;
+  const entryIdColNum = getColumnNumber_(sheet, 'entry_id');
+  if (entryIdColNum < 0) return;
+
+  // Try multiple case variants before giving up (header may differ in real sheets)
+  const processedColNum =
+    getColumnNumber_(sheet, 'processed') ||
+    getColumnNumber_(sheet, 'Processed') ||
+    getColumnNumber_(sheet, 'PROCESSED');
 
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
 
   const entryIds = sheet.getRange(2, entryIdColNum, lastRow - 1, 1).getValues().flat();
   const rowIndex = entryIds.indexOf(String(entryId));
+
+  if (processedColNum < 0) {
+    // Column doesn't exist — append it to the header row
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const newCol = headers.length + 1;
+    sheet.getRange(1, newCol).setValue('processed');
+    if (rowIndex >= 0) {
+      sheet.getRange(rowIndex + 2, newCol).setValue('TRUE');
+    }
+    return;
+  }
+
   if (rowIndex >= 0) {
     sheet.getRange(rowIndex + 2, processedColNum).setValue('TRUE');
   }
+}
+
+/**
+ * One-time migration: scans the RAW sheet and marks processed = TRUE for every
+ * row whose fluent_form_entry_id already appears in the Registrations sheet.
+ * Safe to run multiple times — rows already marked TRUE are skipped.
+ */
+function fixUnmarkedRawRows_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rawSheet = ss.getSheetByName(CONFIG.sheets.raw);
+  const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+  const ui = SpreadsheetApp.getUi();
+
+  if (!rawSheet || !regSheet) {
+    ui.alert('RAW or Registrations sheet not found.');
+    return;
+  }
+
+  const rawLastRow = rawSheet.getLastRow();
+  if (rawLastRow < 2) {
+    ui.alert('No data rows found in the RAW sheet.');
+    return;
+  }
+
+  // Locate or create the 'processed' column
+  let processedColNum =
+    getColumnNumber_(rawSheet, 'processed') ||
+    getColumnNumber_(rawSheet, 'Processed') ||
+    getColumnNumber_(rawSheet, 'PROCESSED');
+
+  if (processedColNum < 0) {
+    const headers = rawSheet.getRange(1, 1, 1, rawSheet.getLastColumn()).getValues()[0];
+    processedColNum = headers.length + 1;
+    rawSheet.getRange(1, processedColNum).setValue('processed');
+  }
+
+  const entryIdColNum = getColumnNumber_(rawSheet, 'entry_id');
+  if (entryIdColNum < 0) {
+    ui.alert('entry_id column not found in RAW sheet.');
+    return;
+  }
+
+  // Collect all entry IDs present in the Registrations sheet
+  const processedEntryIds = new Set();
+  const regLastRow = regSheet.getLastRow();
+  if (regLastRow > 1) {
+    const regEntryIdColNum = getColumnNumber_(regSheet, 'fluent_form_entry_id');
+    if (regEntryIdColNum > 0) {
+      regSheet
+        .getRange(2, regEntryIdColNum, regLastRow - 1, 1)
+        .getValues().flat()
+        .forEach(function(id) { if (id) processedEntryIds.add(String(id)); });
+    }
+  }
+
+  // Walk RAW rows and mark any unprocessed rows whose entry_id is in the set
+  const rawEntryIds = rawSheet.getRange(2, entryIdColNum, rawLastRow - 1, 1).getValues().flat();
+  const currentProcessed = rawSheet.getRange(2, processedColNum, rawLastRow - 1, 1).getValues();
+
+  let markedCount = 0;
+  rawEntryIds.forEach(function(rawEntryId, idx) {
+    const alreadyMarked = String(currentProcessed[idx][0] || '').toUpperCase() === 'TRUE';
+    if (!alreadyMarked && processedEntryIds.has(String(rawEntryId))) {
+      rawSheet.getRange(idx + 2, processedColNum).setValue('TRUE');
+      markedCount++;
+    }
+  });
+
+  ui.alert(
+    '✅ Mark Processed RAW Rows Complete\n\n' +
+    'Newly marked: ' + markedCount + ' row(s).\n' +
+    '(Rows already marked TRUE were skipped.)'
+  );
 }
 
 /**

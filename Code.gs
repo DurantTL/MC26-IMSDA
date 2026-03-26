@@ -49,6 +49,19 @@ function doPost(e) {
       }
 
       const result = processRegistration(data);
+
+      // Safety net: if markRawRowProcessed_ inside processRegistration failed
+      // silently the processed flag would never be set. Call it here again so
+      // it is guaranteed to run even when the internal call failed.
+      try {
+        if (result.success && (data.fluentFormEntryId || data.entry_id)) {
+          const ssSafe = SpreadsheetApp.getActiveSpreadsheet();
+          markRawRowProcessed_(ssSafe, data.fluentFormEntryId || data.entry_id);
+        }
+      } catch (markErr) {
+        Logger.log('doPost: markRawRowProcessed_ safety-net failed (non-fatal): ' + markErr);
+      }
+
       return ContentService
         .createTextOutput(JSON.stringify(result))
         .setMimeType(ContentService.MimeType.JSON);
@@ -979,6 +992,7 @@ function onOpen() {
         .addItem('🔧 Initialize Sheets (Safe)',     'setupSheets')
         .addItem('✅ Validate Data Integrity',      'validateDataIntegrity')
         .addItem('🔄 Resync Selected RAW Entry',    'resyncFromRawSheet')
+        .addItem('✔️ Mark Processed RAW Rows',      'fixUnmarkedRawRows_')
         .addSeparator()
         .addItem('⚠️ ERASE Raw Sheet',              'dangerEraseRawSheet')
     )
@@ -1015,11 +1029,15 @@ function onOpen() {
       SpreadsheetApp.getUi().createMenu('👤 Admin Tools')
         .addItem('🖥️ Open Admin Panel (Sidebar)',  'showAdminSidebar')
         .addSeparator()
-        .addItem('➕ Add Person to Roster',      'adminAddPersonToGroup')
-        .addItem('➖ Remove Person from Roster',  'adminRemovePersonFromRoster')
-        .addItem('🔍 Search Attendee',            'adminSearchAttendee')
+        .addItem('➕ Add Person to Roster',        'adminAddPersonToGroup')
+        .addItem('➖ Remove Person from Roster',   'adminRemovePersonFromRoster')
+        .addItem('🔍 Search Attendee',             'adminSearchAttendee')
         .addItem('👥 Find Duplicates',             'adminFindDuplicates')
         .addItem('🗑️ Delete Registration',        'adminDeleteRegistration')
+        .addSeparator()
+        .addItem('🛏️ Audit Lodging (Preview Only)',     'runLodgingAuditOnly_')
+        .addItem('🔧 Repair Lodging from Price Data',   'repairLodgingFromPrice_')
+        .addItem('✔️ Mark Processed RAW Rows',          'fixUnmarkedRawRows_')
     )
     .addSeparator()
     .addSubMenu(

@@ -18,17 +18,29 @@
  * @returns {string|null}
  */
 function lodgingKeyFromPerPersonPrice_(perPersonPrice) {
-  const price = Number(perPersonPrice);
-  if (isNaN(price)) return null;
-  const tolerance = 0.50;
-  const opts = CONFIG.registrationOptions;
-  const keys = Object.keys(opts);
-  for (var i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    const configPrice = Number(opts[key].price);
-    if (Math.abs(configPrice - price) <= tolerance) return key;
-  }
-  return null;
+  const keys = lodgingKeysFromPerPersonPrice_(perPersonPrice);
+  return keys.length === 1 ? keys[0] : null;
+}
+
+/**
+ * Returns all lodging keys whose configured price is within tolerance.
+ *
+ * @param {number} perPersonPrice
+ * @param {number=} tolerance
+ * @returns {Array<string>}
+ */
+function lodgingKeysFromPerPersonPrice_(perPersonPrice, tolerance) {
+  const price = safeNumber_(perPersonPrice);
+  if (price === null) return [];
+
+  const diffTolerance = safeNumber_(tolerance);
+  const delta = diffTolerance === null ? 0.50 : diffTolerance;
+
+  const opts = CONFIG.registrationOptions || {};
+  return Object.keys(opts).filter(function(key) {
+    const configPrice = safeNumber_(opts[key] && opts[key].price);
+    return configPrice !== null && Math.abs(configPrice - price) <= delta;
+  });
 }
 
 /**
@@ -56,7 +68,7 @@ function runLodgingAuditOnly_() {
 }
 
 /**
- * Repairs lodging for all AUTO-FIXABLE registrations based on
+ * Repairs lodging for all AUTO_FIXABLE registrations based on
  * per-person price evidence.
  *
  * Shows a confirmation dialog before running. Uses LockService to
@@ -67,7 +79,7 @@ function repairLodgingFromPrice_() {
   const ui = SpreadsheetApp.getUi();
   const btn = ui.alert(
     'Repair Lodging from Price Data',
-    'This will update lodging for all AUTO-FIXABLE registrations based on ' +
+    'This will update lodging for all AUTO_FIXABLE registrations based on ' +
     'payment amounts. Review the LodgingRepairLog sheet after running. ' +
     'This cannot be undone automatically. Proceed?',
     ui.ButtonSet.YES_NO
@@ -95,6 +107,16 @@ function repairLodgingFromPrice_() {
  * Core implementation shared by repairLodgingFromPrice_() and
  * runLodgingAuditOnly_().
  *
+ * Decision design:
+ * 1) Structural validity (is data present/parseable enough to reason about?)
+ * 2) Price plausibility (does per-person heuristic produce a clear hint?)
+ * 3) Repair eligibility (safe to write or requires human review?)
+ *
+ * IMPORTANT:
+ * - Recognized lodging keys are not auto-trusted.
+ * - Matching downstream tables are not treated as proof of correctness.
+ * - Price inference is heuristic only; ambiguity routes to manual review.
+ *
  * @param {boolean} dryRun — true = read-only audit, false = write repairs
  */
 function repairOrAuditLodgingInternal_(dryRun) {
@@ -117,21 +139,16 @@ function repairOrAuditLodgingInternal_(dryRun) {
   }
 
   // ── Special-case entry IDs ──────────────────────────────────────────────
-  // Test registrations by Caleb Durant — do not repair, mark as TEST.
-  const TEST_ENTRIES      = ['3453', '3454'];
-  // Duplicate submission (William Stout submitted twice).
-  const DUPLICATE_ENTRIES = ['3503'];
-  // Entries requiring a special note in the log.
+  const TEST_ENTRIES      = { '3453': true, '3454': true };
+  const DUPLICATE_ENTRIES = { '3503': true };
   const SPECIAL_NOTES     = {
     '3490': 'Requires physical RV hookup setup at camp.'
   };
 
-  // ── Read all Registrations rows into memory ────────────────────────────
   const numCols = regSheet.getLastColumn();
   const headers = regSheet.getRange(1, 1, 1, numCols).getValues()[0];
   const allRows = regSheet.getRange(2, 1, lastRow - 1, numCols).getValues();
 
-  // ── Prepare the log sheet ──────────────────────────────────────────────
   const logSheet = getOrCreateLodgingRepairLogSheet_(ss);
   const logRows  = [];
 
@@ -139,131 +156,82 @@ function repairOrAuditLodgingInternal_(dryRun) {
   let okCount     = 0;
   let reviewCount = 0;
 
-  // ── Process each registration ──────────────────────────────────────────
   for (var i = 0; i < allRows.length; i++) {
-    const rowNum = i + 2; // 1-based sheet row (row 1 = headers)
+    const rowNum = i + 2;
+    const row = rowObjectFromHeaders_(headers, allRows[i]);
 
-    // Build a keyed object from the raw row values
-    const row = {};
-    headers.forEach(function(h, j) {
-      row[String(h || '').trim().toLowerCase()] = allRows[i][j];
-    });
-
-    const entryId        = String(row['fluent_form_entry_id'] || row['entry_id'] || '');
-    const registrationId = String(row['registration_id'] || '');
+    const entryId        = String(row['fluent_form_entry_id'] || row['entry_id'] || '').trim();
+    const registrationId = String(row['registration_id'] || '').trim();
     const registrantName = String(row['registrant_name'] || '');
     const email          = String(row['registrant_email'] || '');
-    const storedLodging  = String(row['lodging_option_key'] || row['lodging_preference'] || '');
+    const currentLodging = String(row['lodging_option_key'] || row['lodging_preference'] || '').trim();
 
-    // estimated_total is the pre-processing-fee base charge computed from the roster
-    const registrationTotal = Number(row['estimated_total'] || row['frontend_total'] || 0);
+    const structural = evaluateStructuralValidity_(row, entryId);
+    const attendeeInfo = computeAttendeeCounts_(row, structural.rosterPeople);
+    const registrationTotal = attendeeInfo.registrationTotal;
 
-    // ── Handle special cases first ──────────────────────────────────────
-    if (TEST_ENTRIES.indexOf(entryId) >= 0) {
-      logRows.push(buildLogRow_(entryId, registrantName, email, 0, 0,
-        registrationTotal, 0, storedLodging, '', 'TEST', ''));
-      reviewCount++;
-      continue;
-    }
+    const normalizedLodging = normalizeLodgingKeyForAudit_(currentLodging, {
+      registrationTotal: registrationTotal,
+      attendeeCount: attendeeInfo.billedCount
+    });
 
-    if (DUPLICATE_ENTRIES.indexOf(entryId) >= 0) {
-      logRows.push(buildLogRow_(entryId, registrantName, email, 0, 0,
-        registrationTotal, 0, storedLodging, '', 'DUPLICATE', ''));
-      reviewCount++;
-      continue;
-    }
+    const priceEval = evaluatePricePlausibility_(registrationTotal, attendeeInfo);
 
-    // ── Parse roster JSON ───────────────────────────────────────────────
-    var rosterPeople = [];
-    try {
-      const rJson = row['roster_json'];
-      if (rJson) {
-        const parsed = (typeof rJson === 'string') ? JSON.parse(rJson) : rJson;
-        if (Array.isArray(parsed)) rosterPeople = parsed;
-      }
-    } catch (parseErr) {
-      Logger.log('LodgingRepair: could not parse roster_json for entry ' + entryId + ': ' + parseErr);
-    }
+    const context = {
+      dryRun: dryRun,
+      row: row,
+      rowNum: rowNum,
+      entryId: entryId,
+      registrationId: registrationId,
+      currentLodging: currentLodging,
+      normalizedLodging: normalizedLodging,
+      structural: structural,
+      attendeeInfo: attendeeInfo,
+      priceEval: priceEval,
+      specialNote: SPECIAL_NOTES[entryId] || '',
+      isTest: !!TEST_ENTRIES[entryId],
+      isDuplicate: !!DUPLICATE_ENTRIES[entryId]
+    };
 
-    const totalPeople = rosterPeople.length;
+    const decision = classifyLodgingRepairDecision_(context);
 
-    // Count billed attendees (volunteers are free, so exclude them from the divisor)
-    var billedCount = rosterPeople.filter(function(p) {
-      return String(p.volunteer || p.is_volunteer || '').toLowerCase() !== 'yes';
-    }).length;
-    if (billedCount === 0) billedCount = totalPeople || 1;
-
-    // ── Determine status ────────────────────────────────────────────────
-    var status          = '';
-    var correctedLodging = '';
-    var perPersonPrice  = 0;
-
-    if (registrationTotal <= 0) {
-      // $0 registrations are volunteers or offline payments — cannot determine
-      // lodging from price.
-      status = 'NEEDS_MANUAL_REVIEW';
-      reviewCount++;
-    } else {
-      perPersonPrice = registrationTotal / billedCount;
-      const priceKey = lodgingKeyFromPerPersonPrice_(perPersonPrice);
-
-      if (!priceKey) {
-        // Per-person price doesn't match any known price within tolerance
-        status = 'NEEDS_MANUAL_REVIEW';
-        reviewCount++;
-      } else if (storedLodging === priceKey) {
-        status = 'OK';
-        okCount++;
-      } else if (storedLodging === 'shared_cabin_connected' && priceKey !== 'shared_cabin_connected') {
-        // The most common bug: default of shared_cabin_connected was stored but
-        // the price evidence points to a different option.
-        status = 'AUTO-FIXABLE';
-        correctedLodging = priceKey;
-        // fixedCount is incremented below only if repair actually succeeds
-      } else {
-        // Stored lodging differs from price-derived but the stored value was NOT
-        // shared_cabin_connected — requires human judgement.
-        status = 'NEEDS_MANUAL_REVIEW';
-        correctedLodging = priceKey; // record what price evidence suggests
-        reviewCount++;
-      }
-    }
-
-    const specialNote = SPECIAL_NOTES[entryId] || '';
-    var repairedAt    = '';
-
-    // ── Perform repair (non-dry-run AUTO-FIXABLE rows) ──────────────────
-    if (!dryRun && status === 'AUTO-FIXABLE') {
+    if (!dryRun && decision.writeOccurred && decision.correctedLodging) {
       try {
         repairSingleRegistration_(
           ss, regSheet, rosterSheet, campingSheet, assignmentsSheet, lodgingAssSheet,
-          rowNum, registrationId, correctedLodging
+          rowNum, registrationId, decision.correctedLodging
         );
         fixedCount++;
-        status    = 'AUTO-FIXABLE (repaired)';
-        repairedAt = new Date();
       } catch (repairErr) {
         Logger.log('LodgingRepair: repair failed for ' + registrationId + ': ' + repairErr);
-        status = 'REPAIR_FAILED';
-        reviewCount++;
+        decision.status = 'NEEDS_MANUAL_REVIEW';
+        decision.reasonDetails = appendReason_(decision.reasonDetails, 'repair write failed: ' + repairErr);
+        decision.writeOccurred = false;
       }
-    } else if (status === 'AUTO-FIXABLE') {
-      // Dry-run: count as "would fix"
-      fixedCount++;
     }
 
+    if (decision.status === 'OK') okCount++;
+    if (decision.status !== 'OK' && decision.status !== 'AUTO_FIXABLE') reviewCount++;
+    if (dryRun && decision.status === 'AUTO_FIXABLE') fixedCount++;
+
     logRows.push(buildLogRow_(
-      entryId, registrantName, email, totalPeople, billedCount,
-      registrationTotal, perPersonPrice, storedLodging, correctedLodging,
-      status + (specialNote ? ' — ' + specialNote : ''),
-      repairedAt
+      entryId,
+      registrantName,
+      email,
+      currentLodging,
+      normalizedLodging,
+      registrationTotal,
+      attendeeInfo.totalCount,
+      priceEval.perPersonAmount,
+      priceEval.priceGuess,
+      decision.status,
+      decision.reasonDetails,
+      decision.writeOccurred
     ));
   }
 
-  // ── Write the repair log ───────────────────────────────────────────────
   writeRepairLogRows_(logSheet, logRows);
 
-  // ── Refresh lodging inventory once (not per row) ───────────────────────
   if (!dryRun && fixedCount > 0) {
     try {
       refreshLodgingInventorySheet_(ss);
@@ -272,25 +240,297 @@ function repairOrAuditLodgingInternal_(dryRun) {
     }
   }
 
-  // ── Summary log ───────────────────────────────────────────────────────
   Logger.log(
-    'Lodging repair complete: ' + fixedCount + ' fixed, ' +
-    okCount + ' already OK, ' +
-    reviewCount + ' need manual review'
+    'Lodging repair complete: ' + fixedCount + ' auto-fixable, ' +
+    okCount + ' OK, ' +
+    reviewCount + ' manual review'
   );
 
   SpreadsheetApp.getUi().alert(
     (dryRun ? '📋 Lodging Audit Complete (Preview Only)\n\n' : '✅ Lodging Repair Complete\n\n') +
-    '✔ Already correct: '   + okCount    + '\n' +
-    (dryRun ? '🔧 Would be repaired: ' : '🔧 Repaired: ') + fixedCount  + '\n' +
-    '⚠️ Needs manual review: ' + reviewCount + '\n\n' +
+    '✔ OK: ' + okCount + '\n' +
+    (dryRun ? '🔧 AUTO_FIXABLE (would write): ' : '🔧 AUTO_FIXABLE (written): ') + fixedCount + '\n' +
+    '⚠️ Needs manual review or inconsistent: ' + reviewCount + '\n\n' +
     'See the LodgingRepairLog sheet for details.'
   );
 }
 
 
 // ============================================================
-// SECTION 4 — SINGLE-ROW REPAIR HELPER
+// SECTION 4 — AUDIT DECISION HELPERS
+// ============================================================
+
+/**
+ * Converts one sheet row to a normalized, lowercase-key object.
+ */
+function rowObjectFromHeaders_(headers, values) {
+  const row = {};
+  headers.forEach(function(h, j) {
+    row[String(h || '').trim().toLowerCase()] = values[j];
+  });
+  return row;
+}
+
+/**
+ * Safely parses a number. Returns null when value is not numeric.
+ */
+function safeNumber_(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const n = Number(value);
+  return isNaN(n) ? null : n;
+}
+
+/**
+ * Parse roster JSON defensively.
+ */
+function parseRosterPeople_(row, entryId) {
+  try {
+    const rJson = row['roster_json'];
+    if (!rJson) return [];
+    const parsed = (typeof rJson === 'string') ? JSON.parse(rJson) : rJson;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (parseErr) {
+    Logger.log('LodgingRepair: could not parse roster_json for entry ' + entryId + ': ' + parseErr);
+    return [];
+  }
+}
+
+/**
+ * Structural validity only: parseability + minimum required identifiers.
+ */
+function evaluateStructuralValidity_(row, entryId) {
+  const rosterPeople = parseRosterPeople_(row, entryId);
+  const hasIdentifier = !!String(row['registration_id'] || row['fluent_form_entry_id'] || row['entry_id'] || '').trim();
+  return {
+    rosterPeople: rosterPeople,
+    hasIdentifier: hasIdentifier,
+    rosterPresent: rosterPeople.length > 0
+  };
+}
+
+/**
+ * Computes attendee counts and attendee-mix flags used by heuristic logic.
+ */
+function computeAttendeeCounts_(row, rosterPeople) {
+  const people = Array.isArray(rosterPeople) ? rosterPeople : [];
+  let volunteerCount = 0;
+  let childCount = 0;
+
+  people.forEach(function(person) {
+    const volunteerRaw = String(person.volunteer || person.is_volunteer || '').trim().toLowerCase();
+    if (volunteerRaw === 'yes' || volunteerRaw === 'true' || volunteerRaw === '1') volunteerCount++;
+
+    const ageGroup = String(person.age_group || person.ageGroup || '').trim().toLowerCase();
+    const role = String(person.role || '').trim().toLowerCase();
+    const age = safeNumber_(person.age);
+    if (ageGroup === 'child' || role === 'child' || (age !== null && age < 10)) childCount++;
+  });
+
+  const totalCount = people.length;
+  const nonVolunteerCount = Math.max(totalCount - volunteerCount, 0);
+  const billedCount = nonVolunteerCount > 0 ? nonVolunteerCount : (totalCount > 0 ? totalCount : 1);
+
+  const estimatedTotal = safeNumber_(row['estimated_total']);
+  const frontendTotal = safeNumber_(row['frontend_total']);
+  const registrationTotal = estimatedTotal !== null ? estimatedTotal : (frontendTotal !== null ? frontendTotal : 0);
+
+  return {
+    totalCount: totalCount,
+    volunteerCount: volunteerCount,
+    childCount: childCount,
+    billedCount: billedCount,
+    registrationTotal: registrationTotal
+  };
+}
+
+/**
+ * Price plausibility using per-person heuristic only.
+ */
+function evaluatePricePlausibility_(registrationTotal, attendeeInfo) {
+  const total = safeNumber_(registrationTotal);
+  const billedCount = Math.max(safeNumber_(attendeeInfo.billedCount) || 1, 1);
+
+  if (total === null || total <= 0) {
+    return {
+      hasSignal: false,
+      perPersonAmount: '',
+      candidateKeys: [],
+      priceGuess: '',
+      unambiguousGuess: ''
+    };
+  }
+
+  const perPerson = total / billedCount;
+  const candidateKeys = lodgingKeysFromPerPersonPrice_(perPerson);
+
+  return {
+    hasSignal: true,
+    perPersonAmount: perPerson,
+    candidateKeys: candidateKeys,
+    priceGuess: candidateKeys.join('|'),
+    unambiguousGuess: candidateKeys.length === 1 ? candidateKeys[0] : ''
+  };
+}
+
+/**
+ * Normalize current key defensively for audit comparisons.
+ */
+function normalizeLodgingKeyForAudit_(lodgingValue, context) {
+  const raw = String(lodgingValue || '').trim();
+  if (!raw) return '';
+
+  if (typeof normalizeLodgingPreference_ === 'function') {
+    return String(normalizeLodgingPreference_(raw, context) || '').trim();
+  }
+  return raw.toLowerCase();
+}
+
+/**
+ * Return whether row has signals that make auto-repair unsafe.
+ */
+function hasAmbiguityOrDiscountSignals_(row, attendeeInfo, priceEval) {
+  const reasons = [];
+
+  if (attendeeInfo.volunteerCount > 0) reasons.push('volunteer attendees present');
+  if (attendeeInfo.childCount > 0) reasons.push('child pricing may apply');
+  if (!priceEval.hasSignal) reasons.push('no positive price signal');
+  if (priceEval.candidateKeys.length !== 1) reasons.push('price mapping is ambiguous');
+
+  const paymentStatus = String(row['payment_status'] || '').toLowerCase();
+  if (paymentStatus && paymentStatus !== 'paid') reasons.push('payment status is ' + paymentStatus);
+
+  const adjustmentKeys = [
+    'discount_amount', 'manual_adjustment', 'total_adjustment',
+    'processing_fee', 'square_total', 'amount_paid'
+  ];
+  adjustmentKeys.forEach(function(key) {
+    const n = safeNumber_(row[key]);
+    if (n !== null && key.indexOf('fee') === -1 && Math.abs(n) > 0 && key !== 'square_total' && key !== 'amount_paid') {
+      reasons.push('custom adjustment in ' + key);
+    }
+  });
+
+  const textKeys = ['notes', 'special_notes', 'payment_notes', 'admin_notes'];
+  textKeys.forEach(function(key) {
+    const t = String(row[key] || '').trim();
+    if (t) reasons.push('note present in ' + key);
+  });
+
+  return reasons;
+}
+
+/**
+ * Central classification decision.
+ */
+function classifyLodgingRepairDecision_(ctx) {
+  const recognized = !!(ctx.normalizedLodging && CONFIG.registrationOptions[ctx.normalizedLodging]);
+  const priceGuess = ctx.priceEval.unambiguousGuess;
+  const priceHasConflict = !!(recognized && priceGuess && priceGuess !== ctx.normalizedLodging);
+  const unsafeSignals = hasAmbiguityOrDiscountSignals_(ctx.row, ctx.attendeeInfo, ctx.priceEval);
+
+  const reasonParts = [];
+  if (!ctx.structural.hasIdentifier) reasonParts.push('missing registration/entry identifier');
+  if (!ctx.structural.rosterPresent) reasonParts.push('roster missing or empty');
+  if (ctx.specialNote) reasonParts.push(ctx.specialNote);
+
+  if (ctx.isTest) {
+    return {
+      status: 'TEST',
+      correctedLodging: '',
+      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['explicit test entry override'])),
+      writeOccurred: false
+    };
+  }
+
+  if (ctx.isDuplicate) {
+    return {
+      status: 'DUPLICATE',
+      correctedLodging: '',
+      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['explicit duplicate entry override'])),
+      writeOccurred: false
+    };
+  }
+
+  if (priceHasConflict) {
+    const status = ctx.priceEval.hasSignal ? 'PRICE_INCONSISTENT' : 'NEEDS_MANUAL_REVIEW';
+    return {
+      status: status,
+      correctedLodging: priceGuess,
+      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, [
+        'declared lodging conflicts with price heuristic',
+        'declared=' + ctx.normalizedLodging,
+        'price_guess=' + priceGuess
+      ])),
+      writeOccurred: false
+    };
+  }
+
+  const currentUntrustworthy = !recognized || !ctx.currentLodging || (ctx.normalizedLodging === 'shared_cabin_connected' && priceGuess && priceGuess !== 'shared_cabin_connected');
+
+  if (currentUntrustworthy && priceGuess && unsafeSignals.length === 0) {
+    return {
+      status: 'AUTO_FIXABLE',
+      correctedLodging: priceGuess,
+      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['single clear price-based match'])),
+      writeOccurred: !ctx.dryRun
+    };
+  }
+
+  if (recognized && !priceHasConflict && ctx.priceEval.hasSignal && ctx.priceEval.candidateKeys.length === 1 && ctx.priceEval.unambiguousGuess === ctx.normalizedLodging) {
+    return {
+      status: 'OK',
+      correctedLodging: '',
+      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['declared lodging aligns with price heuristic'])),
+      writeOccurred: false
+    };
+  }
+
+  if (ctx.priceEval.hasSignal && ctx.priceEval.candidateKeys.length === 0) {
+    return {
+      status: 'PRICE_INCONSISTENT',
+      correctedLodging: '',
+      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['price does not map to any configured lodging option'])),
+      writeOccurred: false
+    };
+  }
+
+  return {
+    status: 'NEEDS_MANUAL_REVIEW',
+    correctedLodging: priceGuess,
+    reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, unsafeSignals.length ? unsafeSignals : ['insufficient confidence for auto repair'])),
+    writeOccurred: false
+  };
+}
+
+function appendReasonParts_(baseParts, extraParts) {
+  return (baseParts || []).concat(extraParts || []).filter(function(part) {
+    return String(part || '').trim() !== '';
+  });
+}
+
+function appendReason_(reasonDetails, extra) {
+  return buildReasonString_(appendReasonParts_([reasonDetails], [extra]));
+}
+
+/**
+ * Build compact reason text from an array.
+ */
+function buildReasonString_(parts) {
+  const seen = {};
+  const cleaned = (parts || []).map(function(p) {
+    return String(p || '').trim();
+  }).filter(function(p) {
+    if (!p) return false;
+    if (seen[p]) return false;
+    seen[p] = true;
+    return true;
+  });
+  return cleaned.join('; ');
+}
+
+
+// ============================================================
+// SECTION 5 — SINGLE-ROW REPAIR HELPER
 // ============================================================
 
 /**
@@ -312,7 +552,6 @@ function repairSingleRegistration_(
 ) {
   const correctedLabel = lodgingLabelFromKey_(correctedLodging);
 
-  // ── a/b. Registrations sheet ──────────────────────────────────────────
   var col;
   col = getColumnNumber_(regSheet, 'lodging_preference');
   if (col > 0) regSheet.getRange(regRowNum, col).setValue(correctedLodging);
@@ -323,7 +562,6 @@ function repairSingleRegistration_(
   col = getColumnNumber_(regSheet, 'lodging_option_label');
   if (col > 0) regSheet.getRange(regRowNum, col).setValue(correctedLabel);
 
-  // ── c. Roster sheet ───────────────────────────────────────────────────
   if (rosterSheet) {
     updateSheetRowsForRegistration_(
       rosterSheet, registrationId,
@@ -331,7 +569,6 @@ function repairSingleRegistration_(
     );
   }
 
-  // ── d. CampingGroups sheet ────────────────────────────────────────────
   if (campingSheet) {
     updateSheetRowsForRegistration_(
       campingSheet, registrationId,
@@ -339,7 +576,6 @@ function repairSingleRegistration_(
     );
   }
 
-  // ── d. Assignments sheet ──────────────────────────────────────────────
   if (assignmentsSheet) {
     updateSheetRowsForRegistration_(
       assignmentsSheet, registrationId,
@@ -347,7 +583,6 @@ function repairSingleRegistration_(
     );
   }
 
-  // ── e. LodgingAssignments sheet ───────────────────────────────────────
   if (lodgingAssSheet) {
     updateSheetRowsForRegistration_(
       lodgingAssSheet, registrationId,
@@ -359,10 +594,6 @@ function repairSingleRegistration_(
 /**
  * Sets specified column values on all rows in sheet where
  * registration_id matches.
- *
- * @param {Sheet}  sheet          — target sheet
- * @param {string} registrationId — value to match
- * @param {Object} updates        — { column_header: new_value, ... }
  */
 function updateSheetRowsForRegistration_(sheet, registrationId, updates) {
   const sheetLastRow = sheet.getLastRow();
@@ -374,7 +605,6 @@ function updateSheetRowsForRegistration_(sheet, registrationId, updates) {
   const regIds = sheet.getRange(2, regIdCol, sheetLastRow - 1, 1).getValues().flat();
   const updateKeys = Object.keys(updates);
 
-  // Pre-resolve column numbers once
   const colNums = {};
   updateKeys.forEach(function(key) {
     colNums[key] = getColumnNumber_(sheet, key);
@@ -392,7 +622,7 @@ function updateSheetRowsForRegistration_(sheet, registrationId, updates) {
 
 
 // ============================================================
-// SECTION 5 — LOG SHEET HELPERS
+// SECTION 6 — LOG SHEET HELPERS
 // ============================================================
 
 /**
@@ -410,11 +640,18 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
   }
 
   const headers = [
-    'entry_id', 'registrant_name', 'email',
-    'people_count', 'billed_count',
-    'registration_total', 'per_person_price',
-    'stored_lodging', 'corrected_lodging',
-    'status', 'repaired_at'
+    'entry_id',
+    'registrant_name',
+    'email',
+    'current_lodging_key',
+    'normalized_lodging_key',
+    'registration_total',
+    'attendee_count',
+    'per_person_amount',
+    'price_based_lodging_guess',
+    'final_status',
+    'reason_details',
+    'write_occurred'
   ];
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setValues([headers]);
@@ -432,31 +669,35 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
  */
 function buildLogRow_(
   entryId, registrantName, email,
-  totalPeople, billedCount, registrationTotal, perPersonPrice,
-  storedLodging, correctedLodging, status, repairedAt
+  currentLodging, normalizedLodging,
+  registrationTotal, attendeeCount, perPersonAmount,
+  priceGuess, finalStatus, reasonDetails, writeOccurred
 ) {
   return [
-    entryId, registrantName, email,
-    totalPeople, billedCount,
-    registrationTotal, perPersonPrice,
-    storedLodging, correctedLodging,
-    status, repairedAt
+    entryId,
+    registrantName,
+    email,
+    currentLodging,
+    normalizedLodging,
+    registrationTotal,
+    attendeeCount,
+    perPersonAmount,
+    priceGuess,
+    finalStatus,
+    reasonDetails,
+    writeOccurred ? 'YES' : 'NO'
   ];
 }
 
 /**
  * Writes log rows to the sheet and applies colour-coding by status.
- *
- * Green  (#d4edda) — OK
- * Yellow (#fff3cd) — AUTO-FIXABLE / repaired
- * Red    (#f8d7da) — NEEDS_MANUAL_REVIEW, TEST, DUPLICATE, REPAIR_FAILED
  */
 function writeRepairLogRows_(sheet, logRows) {
   if (!logRows || logRows.length === 0) return;
 
   const startRow  = 2;
   const numCols   = logRows[0].length;
-  const statusIdx = 9; // 0-based index of the 'status' column
+  const statusIdx = 9; // 0-based index of final_status
 
   sheet.getRange(startRow, 1, logRows.length, numCols).setValues(logRows);
 
@@ -464,18 +705,20 @@ function writeRepairLogRows_(sheet, logRows) {
     const rowNum = startRow + idx;
     const status = String(row[statusIdx] || '');
     var bg;
+
     if (status === 'OK') {
-      bg = '#d4edda';                                   // green
-    } else if (status.indexOf('AUTO-FIXABLE') >= 0) {
-      bg = '#fff3cd';                                   // yellow
+      bg = '#d4edda';
+    } else if (status === 'AUTO_FIXABLE') {
+      bg = '#fff3cd';
     } else if (
+      status === 'PRICE_INCONSISTENT' ||
       status === 'NEEDS_MANUAL_REVIEW' ||
-      status === 'TEST'                ||
-      status === 'DUPLICATE'           ||
-      status === 'REPAIR_FAILED'
+      status === 'TEST' ||
+      status === 'DUPLICATE'
     ) {
-      bg = '#f8d7da';                                   // red
+      bg = '#f8d7da';
     }
+
     if (bg) {
       sheet.getRange(rowNum, 1, 1, numCols).setBackground(bg);
     }

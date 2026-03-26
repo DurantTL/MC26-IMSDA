@@ -172,6 +172,10 @@ function processBackgroundJobs() {
       } else if (job.type === 'report') {
         // Collect all report requests; run once at the end
         reportNeeded = true;
+      } else if (job.type === 'refreshInventory') {
+        refreshLodgingInventorySheet_(ss);
+      } else if (job.type === 'refreshShirts') {
+        refreshShirtInventorySheet_(ss);
       } else {
         Logger.log('processBackgroundJobs: Unknown job type "' + job.type + '" — skipping.');
       }

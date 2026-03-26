@@ -575,7 +575,20 @@ function mancamp_extract_people_payload( $formData ) {
 
 function mancamp_sanitise_people( $people, $formData = [] ) {
     $clean = [];
-    $default_option_key = mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? '' );
+    // Prefer lodging_request_json (always written by JS widget) as the most
+    // reliable source for the default lodging type, then fall back to the
+    // individual lodging_option_key field.
+    $default_option_key = '';
+    $lodging_request_json_raw = $formData['lodging_request_json'] ?? '';
+    if ( $lodging_request_json_raw !== '' ) {
+        $lodging_request_decoded = json_decode( wp_unslash( $lodging_request_json_raw ), true );
+        if ( json_last_error() === JSON_ERROR_NONE && is_array( $lodging_request_decoded ) ) {
+            $default_option_key = mancamp_normalise_lodging_preference( $lodging_request_decoded['type'] ?? $lodging_request_decoded['lodging_option_key'] ?? '' );
+        }
+    }
+    if ( $default_option_key === '' ) {
+        $default_option_key = mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? '' );
+    }
     $default_program = sanitize_text_field( $formData['program_type'] ?? $formData['program'] ?? 'standard' );
     $default_shirt = strtoupper( sanitize_text_field( $formData['shirt_size'] ?? '' ) );
 
@@ -753,7 +766,7 @@ function mancamp_normalise_lodging_preference( $value ) {
         return $normalised;
     }
 
-    return 'shared_cabin_connected';
+    return '';
 }
 
 function mancamp_normalise_pay_type( $value ) {

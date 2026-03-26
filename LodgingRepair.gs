@@ -226,7 +226,9 @@ function repairOrAuditLodgingInternal_(dryRun) {
       priceEval.priceGuess,
       decision.status,
       decision.reasonDetails,
-      decision.writeOccurred
+      decision.writeOccurred,
+      decision.debug,
+      decision.decisionBranch
     ));
   }
 
@@ -276,7 +278,10 @@ function rowObjectFromHeaders_(headers, values) {
  */
 function safeNumber_(value) {
   if (value === '' || value === null || value === undefined) return null;
-  const n = Number(value);
+  if (typeof value === 'number') return isNaN(value) ? null : value;
+  const cleaned = String(value).replace(/[$,\s]/g, '').trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
   return isNaN(n) ? null : n;
 }
 
@@ -301,10 +306,12 @@ function parseRosterPeople_(row, entryId) {
 function evaluateStructuralValidity_(row, entryId) {
   const rosterPeople = parseRosterPeople_(row, entryId);
   const hasIdentifier = !!String(row['registration_id'] || row['fluent_form_entry_id'] || row['entry_id'] || '').trim();
+  const hasAtLeastOneAttendee = rosterPeople.length > 0;
   return {
     rosterPeople: rosterPeople,
     hasIdentifier: hasIdentifier,
-    rosterPresent: rosterPeople.length > 0
+    rosterPresent: hasAtLeastOneAttendee,
+    structurallyValid: hasIdentifier && hasAtLeastOneAttendee
   };
 }
 
@@ -314,7 +321,7 @@ function evaluateStructuralValidity_(row, entryId) {
 function computeAttendeeCounts_(row, rosterPeople) {
   const people = Array.isArray(rosterPeople) ? rosterPeople : [];
   let volunteerCount = 0;
-  let childCount = 0;
+  let minorCount = 0;
 
   people.forEach(function(person) {
     const volunteerRaw = String(person.volunteer || person.is_volunteer || '').trim().toLowerCase();
@@ -323,7 +330,7 @@ function computeAttendeeCounts_(row, rosterPeople) {
     const ageGroup = String(person.age_group || person.ageGroup || '').trim().toLowerCase();
     const role = String(person.role || '').trim().toLowerCase();
     const age = safeNumber_(person.age);
-    if (ageGroup === 'child' || role === 'child' || (age !== null && age < 10)) childCount++;
+    if (ageGroup === 'child' || ageGroup === 'minor' || role === 'child' || role === 'minor' || (age !== null && age < 18)) minorCount++;
   });
 
   const totalCount = people.length;
@@ -337,9 +344,10 @@ function computeAttendeeCounts_(row, rosterPeople) {
   return {
     totalCount: totalCount,
     volunteerCount: volunteerCount,
-    childCount: childCount,
+    minorCount: minorCount,
     billedCount: billedCount,
-    registrationTotal: registrationTotal
+    registrationTotal: registrationTotal,
+    hasGroupComplexity: totalCount > 1
   };
 }
 
@@ -353,22 +361,29 @@ function evaluatePricePlausibility_(registrationTotal, attendeeInfo) {
   if (total === null || total <= 0) {
     return {
       hasSignal: false,
+      plausibility: 'unknown',
       perPersonAmount: '',
       candidateKeys: [],
       priceGuess: '',
-      unambiguousGuess: ''
+      unambiguousGuess: '',
+      explain: total === 0 ? 'zero total' : 'missing/non-positive total'
     };
   }
 
   const perPerson = total / billedCount;
   const candidateKeys = lodgingKeysFromPerPersonPrice_(perPerson);
+  const plausibility = candidateKeys.length === 1 ? 'affirmative' : (candidateKeys.length > 1 ? 'ambiguous' : 'inconsistent');
 
   return {
     hasSignal: true,
+    plausibility: plausibility,
     perPersonAmount: perPerson,
     candidateKeys: candidateKeys,
     priceGuess: candidateKeys.join('|'),
-    unambiguousGuess: candidateKeys.length === 1 ? candidateKeys[0] : ''
+    unambiguousGuess: candidateKeys.length === 1 ? candidateKeys[0] : '',
+    explain: plausibility === 'affirmative'
+      ? 'single configured lodging match'
+      : (plausibility === 'ambiguous' ? 'multiple configured lodging matches' : 'no configured lodging match')
   };
 }
 
@@ -392,7 +407,8 @@ function hasAmbiguityOrDiscountSignals_(row, attendeeInfo, priceEval) {
   const reasons = [];
 
   if (attendeeInfo.volunteerCount > 0) reasons.push('volunteer attendees present');
-  if (attendeeInfo.childCount > 0) reasons.push('child pricing may apply');
+  if (attendeeInfo.minorCount > 0) reasons.push('minor pricing may apply');
+  if (attendeeInfo.hasGroupComplexity) reasons.push('group/roommate complexity present');
   if (!priceEval.hasSignal) reasons.push('no positive price signal');
   if (priceEval.candidateKeys.length !== 1) reasons.push('price mapping is ambiguous');
 
@@ -419,16 +435,48 @@ function hasAmbiguityOrDiscountSignals_(row, attendeeInfo, priceEval) {
   return reasons;
 }
 
+function computeDecisionFlags_(ctx, recognized) {
+  const exemptReasons = [];
+  if (ctx.isTest) exemptReasons.push('test entry override');
+  if (ctx.isDuplicate) exemptReasons.push('duplicate entry override');
+  if (ctx.specialNote) exemptReasons.push('special note override');
+
+  const ambiguityFlags = hasAmbiguityOrDiscountSignals_(ctx.row, ctx.attendeeInfo, ctx.priceEval);
+  const specialCaseFlags = [];
+  if (ctx.attendeeInfo.volunteerCount > 0) specialCaseFlags.push('volunteer');
+  if (ctx.attendeeInfo.minorCount > 0) specialCaseFlags.push('minor');
+  if (ctx.attendeeInfo.registrationTotal <= 0) specialCaseFlags.push('zero_total');
+  if (ctx.attendeeInfo.hasGroupComplexity) specialCaseFlags.push('group');
+
+  return {
+    recognizedDeclaredLodging: recognized,
+    structuralValidityResult: !!ctx.structural.structurallyValid,
+    pricePlausibilityResult: ctx.priceEval.plausibility || 'unknown',
+    ambiguityFlags: ambiguityFlags,
+    specialCaseFlags: specialCaseFlags,
+    explicitExempt: exemptReasons.length > 0,
+    exemptReasons: exemptReasons
+  };
+}
+
 /**
  * Central classification decision.
  */
 function classifyLodgingRepairDecision_(ctx) {
+  // Why prior versions were too permissive:
+  // 1) Any recognized key + one matching price guess went straight to OK.
+  // 2) "Unsafe" signals (volunteer/minor/notes/group ambiguity) were only
+  //    used to block AUTO_FIXABLE, not to block OK.
+  // 3) Structural validity was collected but not required for OK.
+  // This rewrite makes OK an explicit high-confidence path only.
   const recognized = !!(ctx.normalizedLodging && CONFIG.registrationOptions[ctx.normalizedLodging]);
+  const flags = computeDecisionFlags_(ctx, recognized);
   const priceGuess = ctx.priceEval.unambiguousGuess;
   const priceHasConflict = !!(recognized && priceGuess && priceGuess !== ctx.normalizedLodging);
-  const unsafeSignals = hasAmbiguityOrDiscountSignals_(ctx.row, ctx.attendeeInfo, ctx.priceEval);
+  const unsafeSignals = flags.ambiguityFlags;
 
   const reasonParts = [];
+  if (!flags.structuralValidityResult) reasonParts.push('structural validity failed');
   if (!ctx.structural.hasIdentifier) reasonParts.push('missing registration/entry identifier');
   if (!ctx.structural.rosterPresent) reasonParts.push('roster missing or empty');
   if (ctx.specialNote) reasonParts.push(ctx.specialNote);
@@ -438,7 +486,9 @@ function classifyLodgingRepairDecision_(ctx) {
       status: 'TEST',
       correctedLodging: '',
       reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['explicit test entry override'])),
-      writeOccurred: false
+      writeOccurred: false,
+      decisionBranch: 'TEST_OVERRIDE',
+      debug: flags
     };
   }
 
@@ -447,7 +497,9 @@ function classifyLodgingRepairDecision_(ctx) {
       status: 'DUPLICATE',
       correctedLodging: '',
       reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['explicit duplicate entry override'])),
-      writeOccurred: false
+      writeOccurred: false,
+      decisionBranch: 'DUPLICATE_OVERRIDE',
+      debug: flags
     };
   }
 
@@ -461,27 +513,50 @@ function classifyLodgingRepairDecision_(ctx) {
         'declared=' + ctx.normalizedLodging,
         'price_guess=' + priceGuess
       ])),
-      writeOccurred: false
+      writeOccurred: false,
+      decisionBranch: 'PRICE_CONFLICT_WITH_DECLARED',
+      debug: flags
     };
   }
 
-  const currentUntrustworthy = !recognized || !ctx.currentLodging || (ctx.normalizedLodging === 'shared_cabin_connected' && priceGuess && priceGuess !== 'shared_cabin_connected');
+  const currentUntrustworthy = !recognized || !ctx.currentLodging;
+  const noAmbiguityOrSpecialCase = unsafeSignals.length === 0 && flags.specialCaseFlags.length === 0;
+  const strictAutofixEligible = flags.structuralValidityResult &&
+    currentUntrustworthy &&
+    ctx.priceEval.plausibility === 'affirmative' &&
+    noAmbiguityOrSpecialCase;
 
-  if (currentUntrustworthy && priceGuess && unsafeSignals.length === 0) {
+  if (strictAutofixEligible) {
     return {
       status: 'AUTO_FIXABLE',
       correctedLodging: priceGuess,
       reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['single clear price-based match'])),
-      writeOccurred: !ctx.dryRun
+      writeOccurred: !ctx.dryRun,
+      decisionBranch: 'AUTO_FIXABLE_STRICT_SINGLE_MATCH',
+      debug: flags
     };
   }
 
-  if (recognized && !priceHasConflict && ctx.priceEval.hasSignal && ctx.priceEval.candidateKeys.length === 1 && ctx.priceEval.unambiguousGuess === ctx.normalizedLodging) {
+  const okByExplicitExemption = flags.explicitExempt && flags.structuralValidityResult;
+  const okByStrictValidation = flags.structuralValidityResult &&
+    recognized &&
+    ctx.priceEval.plausibility === 'affirmative' &&
+    ctx.priceEval.unambiguousGuess === ctx.normalizedLodging &&
+    noAmbiguityOrSpecialCase;
+
+  if (okByStrictValidation || okByExplicitExemption) {
     return {
       status: 'OK',
       correctedLodging: '',
-      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['declared lodging aligns with price heuristic'])),
-      writeOccurred: false
+      reasonDetails: buildReasonString_(appendReasonParts_(
+        reasonParts,
+        okByExplicitExemption
+          ? ['explicit documented exemption from strict price validation', 'exemption=' + flags.exemptReasons.join('|')]
+          : ['declared lodging aligns with strict price validation']
+      )),
+      writeOccurred: false,
+      decisionBranch: okByExplicitExemption ? 'OK_BY_EXEMPTION' : 'OK_STRICT_VALIDATION',
+      debug: flags
     };
   }
 
@@ -490,7 +565,9 @@ function classifyLodgingRepairDecision_(ctx) {
       status: 'PRICE_INCONSISTENT',
       correctedLodging: '',
       reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['price does not map to any configured lodging option'])),
-      writeOccurred: false
+      writeOccurred: false,
+      decisionBranch: 'PRICE_INCONSISTENT_NO_MATCH',
+      debug: flags
     };
   }
 
@@ -498,7 +575,9 @@ function classifyLodgingRepairDecision_(ctx) {
     status: 'NEEDS_MANUAL_REVIEW',
     correctedLodging: priceGuess,
     reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, unsafeSignals.length ? unsafeSignals : ['insufficient confidence for auto repair'])),
-    writeOccurred: false
+    writeOccurred: false,
+    decisionBranch: 'DEFAULT_STRICT_MANUAL_REVIEW',
+    debug: flags
   };
 }
 
@@ -649,6 +728,12 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
     'attendee_count',
     'per_person_amount',
     'price_based_lodging_guess',
+    'declared_lodging_recognized',
+    'structural_validity_result',
+    'price_plausibility_result',
+    'ambiguity_flags',
+    'special_case_flags',
+    'decision_branch',
     'final_status',
     'reason_details',
     'write_occurred'
@@ -671,8 +756,10 @@ function buildLogRow_(
   entryId, registrantName, email,
   currentLodging, normalizedLodging,
   registrationTotal, attendeeCount, perPersonAmount,
-  priceGuess, finalStatus, reasonDetails, writeOccurred
+  priceGuess, finalStatus, reasonDetails, writeOccurred,
+  debugInfo, decisionBranch
 ) {
+  const debug = debugInfo || {};
   return [
     entryId,
     registrantName,
@@ -683,6 +770,12 @@ function buildLogRow_(
     attendeeCount,
     perPersonAmount,
     priceGuess,
+    debug.recognizedDeclaredLodging ? 'TRUE' : 'FALSE',
+    debug.structuralValidityResult ? 'TRUE' : 'FALSE',
+    String(debug.pricePlausibilityResult || ''),
+    (debug.ambiguityFlags || []).join('|'),
+    (debug.specialCaseFlags || []).join('|'),
+    decisionBranch || '',
     finalStatus,
     reasonDetails,
     writeOccurred ? 'YES' : 'NO'
@@ -697,7 +790,7 @@ function writeRepairLogRows_(sheet, logRows) {
 
   const startRow  = 2;
   const numCols   = logRows[0].length;
-  const statusIdx = 9; // 0-based index of final_status
+  const statusIdx = 15; // 0-based index of final_status
 
   sheet.getRange(startRow, 1, logRows.length, numCols).setValues(logRows);
 

@@ -4,7 +4,7 @@
  * Plugin URI:  https://imsda.org
  * Description: Bridges Fluent Forms Man Camp registration submissions to the
  *              Google Apps Script backend and provides the Man Camp attendee widget.
- * Version:     2.2.0
+ * Version:     2.4.0
  * Author:      Iowa-Missouri Conference of Seventh-day Adventists
  * Author URI:  https://imsda.org
  * License:     GPL-2.0+
@@ -29,6 +29,13 @@ define( 'MANCAMP_RETRY_HOOK', 'mancamp_retry_webhooks' );
 define( 'MANCAMP_OFFLINE_SWEEP_HOOK', 'mancamp_offline_sweep' );
 define( 'MANCAMP_OFFLINE_SWEEP_STATUS_OPTION', 'mancamp_offline_sweep_status' );
 define( 'MANCAMP_ROOMMATE_MATCHES_OPTION', 'mancamp_roommate_matches' );
+
+/**
+ * Maximum number of people allowed in a single cabin (including the leader).
+ * Groups larger than this are auto-split: the leader + (MANCAMP_CABIN_MAX - 1)
+ * others form the primary group; overflow entries are flagged for admin review.
+ */
+define( 'MANCAMP_CABIN_MAX', 4 );
 
 function mancamp_get_setting( $key, $default = '' ) {
     $options = get_option( MANCAMP_OPTION_GROUP, [] );
@@ -497,8 +504,25 @@ function mancamp_build_payload( $submission, $payment = [] ) {
     $submitted_at = mancamp_submission_timestamp( $submission );
     mancamp_warn_for_missing_fields( $entry_id, $top_level );
 
-    $accommodations = sanitize_textarea_field( $form_data['accommodations'] ?? '' );
+    // 'accommodations' is the current field name; 'description' was the legacy name.
+    // Both are checked so resyncs of old submissions populate roommate data correctly.
+    $accommodations = sanitize_textarea_field(
+        $form_data['accommodations'] ?? $form_data['description'] ?? ''
+    );
+
+    if ( mancamp_debug() ) {
+        error_log( '[ManCamp][DEBUG] build_payload entry_id=' . $entry_id
+            . ' form_data keys: ' . implode( ', ', array_keys( $form_data ) ) );
+        error_log( '[ManCamp][DEBUG] accommodations value: ' . var_export( $accommodations, true ) );
+        error_log( '[ManCamp][DEBUG] raw form_data[accommodations]: ' . var_export( $form_data['accommodations'] ?? 'NOT_SET', true ) );
+        error_log( '[ManCamp][DEBUG] raw form_data[description]: ' . var_export( $form_data['description'] ?? 'NOT_SET', true ) );
+    }
+
     $roommate_request = mancamp_build_roommate_request( $entry_id, $accommodations );
+
+    if ( mancamp_debug() ) {
+        error_log( '[ManCamp][DEBUG] roommate_request result: ' . json_encode( $roommate_request ) );
+    }
 
     return [
         'action'            => 'submitRegistration',
@@ -640,7 +664,7 @@ function mancamp_sanitise_people( $people, $formData = [] ) {
             'is_minor'                 => $is_minor,
             'notes'                    => $notes,
             'medical_notes'            => sanitize_textarea_field( $raw['medical_notes'] ?? '' ),
-            'accommodations'           => $idx === 0 ? sanitize_textarea_field( $formData['accommodations'] ?? '' ) : '',
+            'accommodations'           => $idx === 0 ? sanitize_textarea_field( $formData['accommodations'] ?? $formData['description'] ?? '' ) : '',
         ];
 
         $clean[] = $person;
@@ -686,7 +710,7 @@ function mancamp_build_single_person_from_fields( $formData ) {
         'lodging_option_key'       => mancamp_normalise_lodging_preference( $formData['lodging_option_key'] ?? $formData['lodging_preference'] ?? '' ),
         'notes'                    => sanitize_textarea_field( $formData['notes'] ?? '' ),
         'medical_notes'            => sanitize_textarea_field( $formData['medical_notes'] ?? '' ),
-        'accommodations'           => sanitize_textarea_field( $formData['accommodations'] ?? '' ),
+        'accommodations'           => sanitize_textarea_field( $formData['accommodations'] ?? $formData['description'] ?? '' ),
     ];
 }
 
@@ -1360,13 +1384,15 @@ function mancamp_handle_save_roommate_match() {
     if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Insufficient permissions.' );
     check_admin_referer( 'mancamp_save_roommate_match', 'mancamp_roommate_match_nonce' );
 
-    $entry_id   = (int) ( $_POST['mancamp_roommate_entry_id']   ?? 0 );
-    $matched_id = (int) ( $_POST['mancamp_roommate_matched_id'] ?? 0 );
+    $entry_id    = (int) ( $_POST['mancamp_roommate_entry_id'] ?? 0 );
+    // Accept a comma-separated list of matched IDs (multi-select group members).
+    $raw_ids     = sanitize_text_field( $_POST['mancamp_roommate_matched_ids'] ?? '' );
+    $matched_ids = array_values( array_filter( array_map( 'intval', explode( ',', $raw_ids ) ) ) );
 
     if ( $entry_id > 0 ) {
         $overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
-        if ( $matched_id > 0 ) {
-            $overrides[ $entry_id ] = $matched_id;
+        if ( ! empty( $matched_ids ) ) {
+            $overrides[ $entry_id ] = $matched_ids;
         } else {
             unset( $overrides[ $entry_id ] );
         }
@@ -1420,8 +1446,6 @@ function mancamp_admin_page() {
         'processed_count' => 0,
     ] );
     $roommate_saved = isset( $_GET['roommate_saved'] );
-    $roommate_overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
-    $all_submissions_for_roommate = mancamp_get_all_form_submissions();
 
     ?>
     <div class="wrap" style="max-width:900px;">
@@ -1756,113 +1780,12 @@ function mancamp_admin_page() {
     <!-- ── Roommate Requests ─────────────────────────────────────────── -->
     <div id="roommate-requests" style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;margin-bottom:24px;">
       <h2 style="margin-top:0;">Roommate Requests</h2>
-      <?php
-      // Build index: entry_id => ['name' => '...', 'accommodations' => '...']
-      $roommate_rows = [];
-      $registrant_index = []; // entry_id => display name, for the dropdown
-      foreach ( $all_submissions_for_roommate as $sub ) {
-          $sub_id   = (int) ( $sub['id'] ?? 0 );
-          $fd       = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
-          $first    = sanitize_text_field( $fd['first_name'] ?? '' );
-          $last     = sanitize_text_field( $fd['last_name']  ?? '' );
-          $name     = trim( $first . ' ' . $last );
-          if ( $name === '' ) {
-              $people_raw = $fd['people_json'] ?? $fd['attendees_json'] ?? '';
-              if ( $people_raw !== '' ) {
-                  $ppl = json_decode( wp_unslash( $people_raw ), true );
-                  if ( is_array( $ppl ) && ! empty( $ppl[0] ) ) {
-                      $name = trim(
-                          sanitize_text_field( $ppl[0]['first_name'] ?? $ppl[0]['firstName'] ?? '' ) . ' ' .
-                          sanitize_text_field( $ppl[0]['last_name']  ?? $ppl[0]['lastName']  ?? '' )
-                      );
-                  }
-              }
-          }
-          $accommodations = sanitize_textarea_field(
-              $fd['accommodations'] ??
-              $fd['description'] ??
-              $fd['special_accommodations'] ??
-              $fd['roommate_request'] ??
-              ''
-          );
-          if ( $sub_id > 0 ) {
-              $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
-          }
-          if ( $sub_id > 0 ) {
-              $auto_match = $accommodations !== ''
-                  ? mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions_for_roommate )
-                  : null;
-
-              $roommate_rows[] = [
-                  'entry_id'       => $sub_id,
-                  'name'           => $name ?: '—',
-                  'accommodations' => $accommodations,
-                  'auto_match_id'  => $auto_match,
-                  'override_id'    => $roommate_overrides[ $sub_id ] ?? null,
-              ];
-          }
-      }
-      ?>
-      <?php if ( empty( $roommate_rows ) ) : ?>
-        <p style="color:#646970;">No registrations found. Check that the Form ID is set correctly in Settings → Man Camp Registration.</p>
-      <?php else : ?>
-        <table class="widefat striped">
-          <thead>
-            <tr>
-              <th>FF Entry ID</th>
-              <th>Registrant</th>
-              <th>Accommodations Request</th>
-              <th>Auto-Matched To</th>
-              <th>Manual Override</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ( $roommate_rows as $row ) :
-              $effective_match_id = $row['override_id'] ?? $row['auto_match_id'];
-              $effective_match_name = $effective_match_id ? ( $registrant_index[ $effective_match_id ] ?? 'Entry #' . $effective_match_id ) : null;
-              $auto_match_name = $row['auto_match_id'] ? ( $registrant_index[ $row['auto_match_id'] ] ?? 'Entry #' . $row['auto_match_id'] ) : null;
-            ?>
-            <tr>
-              <td><?php echo esc_html( $row['entry_id'] ); ?></td>
-              <td><?php echo esc_html( $row['name'] ); ?></td>
-              <td style="max-width:220px;word-break:break-word;"><?php echo esc_html( $row['accommodations'] ); ?></td>
-              <td>
-                <?php if ( $effective_match_name ) : ?>
-                  <?php echo esc_html( $effective_match_name ); ?> <span style="color:#646970;">(#<?php echo (int) $effective_match_id; ?>)</span>
-                  <?php if ( $row['override_id'] ) : ?>
-                    <span style="color:#2271b1;font-size:11px;display:block;">Manual override</span>
-                  <?php elseif ( $auto_match_name ) : ?>
-                    <span style="color:#646970;font-size:11px;display:block;">Auto-matched</span>
-                  <?php endif; ?>
-                <?php else : ?>
-                  <span style="color:#646970;">No match found</span>
-                <?php endif; ?>
-              </td>
-              <td>
-                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                  <?php wp_nonce_field( 'mancamp_save_roommate_match', 'mancamp_roommate_match_nonce' ); ?>
-                  <input type="hidden" name="action" value="mancamp_save_roommate_match">
-                  <input type="hidden" name="mancamp_roommate_entry_id" value="<?php echo esc_attr( $row['entry_id'] ); ?>">
-                  <select name="mancamp_roommate_matched_id" style="max-width:180px;">
-                    <option value="0">— clear / auto —</option>
-                    <?php foreach ( $registrant_index as $reg_id => $reg_name ) :
-                      if ( $reg_id === $row['entry_id'] ) continue;
-                    ?>
-                      <option value="<?php echo esc_attr( $reg_id ); ?>"
-                        <?php selected( (int) ( $row['override_id'] ?? 0 ), $reg_id ); ?>>
-                        <?php echo esc_html( $reg_name ); ?> (#<?php echo (int) $reg_id; ?>)
-                      </option>
-                    <?php endforeach; ?>
-                  </select>
-                  <button type="submit" class="button button-small" style="margin-left:4px;">Save Match</button>
-                </form>
-              </td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-      <?php endif; ?>
+      <p>
+        Roommate matching is managed on its own page to keep this settings screen fast.
+        <a href="<?php echo esc_url( admin_url( 'admin.php?page=mancamp-roommate-requests' ) ); ?>" class="button button-secondary" style="margin-left:8px;">
+          Go to Roommate Requests →
+        </a>
+      </p>
     </div>
 
     </div><!-- /.wrap -->
@@ -1876,24 +1799,15 @@ function mancamp_roommate_page() {
     $roommate_overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
     $all_submissions    = mancamp_get_all_form_submissions();
 
-    ?>
-    <div class="wrap" style="max-width:900px;">
-    <h1>Man Camp — Roommate Requests</h1>
-
-    <?php if ( $roommate_saved ) : ?>
-      <div class="notice notice-success is-dismissible"><p>✔ Roommate match saved.</p></div>
-    <?php endif; ?>
-
-    <?php
-    // Build registrant index and rows with accommodations text.
-    $roommate_rows    = [];
+    // ── Build registrant index (entry_id => display name) ────────────────────
     $registrant_index = [];
     foreach ( $all_submissions as $sub ) {
         $sub_id = (int) ( $sub['id'] ?? 0 );
-        $fd     = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
-        $first  = sanitize_text_field( $fd['first_name'] ?? '' );
-        $last   = sanitize_text_field( $fd['last_name']  ?? '' );
-        $name   = trim( $first . ' ' . $last );
+        if ( $sub_id <= 0 ) continue;
+        $fd    = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
+        $first = sanitize_text_field( $fd['first_name'] ?? '' );
+        $last  = sanitize_text_field( $fd['last_name']  ?? '' );
+        $name  = trim( $first . ' ' . $last );
         if ( $name === '' ) {
             $people_raw = $fd['people_json'] ?? $fd['attendees_json'] ?? '';
             if ( $people_raw !== '' ) {
@@ -1906,6 +1820,16 @@ function mancamp_roommate_page() {
                 }
             }
         }
+        $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
+    }
+
+    // ── Build roommate rows ───────────────────────────────────────────────────
+    $roommate_rows = [];
+    foreach ( $all_submissions as $sub ) {
+        $sub_id = (int) ( $sub['id'] ?? 0 );
+        if ( $sub_id <= 0 ) continue;
+        $fd = is_array( $sub['response'] ?? null ) ? $sub['response'] : [];
+
         $accommodations = sanitize_textarea_field(
             $fd['accommodations'] ??
             $fd['description'] ??
@@ -1913,59 +1837,126 @@ function mancamp_roommate_page() {
             $fd['roommate_request'] ??
             ''
         );
-        if ( $sub_id > 0 ) {
-            $registrant_index[ $sub_id ] = $name ?: '(Entry #' . $sub_id . ')';
-        }
-        if ( $sub_id > 0 ) {
-            $auto_match = $accommodations !== ''
-                ? mancamp_find_roommate_match( $sub_id, $accommodations, $all_submissions )
-                : null;
 
-            $roommate_rows[] = [
-                'entry_id'       => $sub_id,
-                'name'           => $name ?: '—',
-                'accommodations' => $accommodations,
-                'auto_match_id'  => $auto_match,
-                'override_id'    => $roommate_overrides[ $sub_id ] ?? null,
-            ];
+        // Auto-match: find all registered names + flag unmatched names.
+        $auto_result     = $accommodations !== ''
+            ? mancamp_find_roommate_matches( $sub_id, $accommodations, $all_submissions )
+            : [ 'matched_ids' => [], 'unmatched_names' => [], 'overflow_ids' => [] ];
+
+        // Override: normalise stored value to array of ints, then apply cap.
+        $raw_override    = $roommate_overrides[ $sub_id ] ?? null;
+        $override_ids    = [];
+        $override_overflow = [];
+        if ( ! empty( $raw_override ) ) {
+            $raw_list     = is_array( $raw_override )
+                ? array_values( array_map( 'intval', $raw_override ) )
+                : [ (int) $raw_override ];
+            $capped_over  = mancamp_apply_cabin_cap( $sub_id, $raw_list );
+            $override_ids     = $capped_over['matched_ids'];
+            $override_overflow = $capped_over['overflow_ids'];
         }
+
+        // Effective group: override wins, otherwise auto.
+        $effective_ids    = ! empty( $override_ids ) ? $override_ids : $auto_result['matched_ids'];
+        $effective_overflow = ! empty( $raw_override ) ? $override_overflow : ( $auto_result['overflow_ids'] ?? [] );
+        $leader_id        = ! empty( $effective_ids )
+            ? mancamp_resolve_group_leader( $sub_id, $effective_ids )
+            : null;
+
+        $roommate_rows[] = [
+            'entry_id'        => $sub_id,
+            'name'            => $registrant_index[ $sub_id ] ?? '—',
+            'accommodations'  => $accommodations,
+            'auto_ids'        => $auto_result['matched_ids'],
+            'unmatched_names' => $auto_result['unmatched_names'],
+            'override_ids'    => $override_ids,
+            'effective_ids'   => $effective_ids,
+            'overflow_ids'    => $effective_overflow,
+            'leader_id'       => $leader_id,
+            'is_leader'       => $leader_id !== null && $leader_id === $sub_id,
+            'is_override'     => ! empty( $override_ids ),
+        ];
     }
+
     ?>
+    <div class="wrap" style="max-width:1100px;">
+    <h1>Man Camp — Roommate Requests</h1>
+
+    <?php if ( $roommate_saved ) : ?>
+      <div class="notice notice-success is-dismissible"><p>✔ Roommate match saved.</p></div>
+    <?php endif; ?>
+
+    <p style="color:#646970;margin-bottom:16px;">
+      Group members point to a <strong>cabin leader</strong> (lowest entry ID in the group).
+      GAS counts one lodging slot per leader, but sends every person their own confirmation email.
+      Entries with unmatched names <span style="color:#d63638;">⚠</span> need manual review.
+    </p>
 
     <div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:24px;">
     <?php if ( empty( $roommate_rows ) ) : ?>
       <p style="color:#646970;">No registrations found. Check that the Form ID is set correctly in Settings → Man Camp Registration.</p>
     <?php else : ?>
-      <table class="widefat striped">
+      <table class="widefat striped" style="font-size:13px;">
         <thead>
           <tr>
-            <th>FF Entry ID</th>
-            <th>Registrant</th>
+            <th style="width:70px;">Entry</th>
+            <th style="width:140px;">Registrant</th>
             <th>Accommodations Request</th>
-            <th>Auto-Matched To</th>
-            <th>Manual Override</th>
+            <th style="width:200px;">Cabin Group</th>
+            <th style="width:220px;">Manual Override</th>
           </tr>
         </thead>
         <tbody>
-          <?php foreach ( $roommate_rows as $row ) :
-            $effective_match_id   = $row['override_id'] ?? $row['auto_match_id'];
-            $effective_match_name = $effective_match_id ? ( $registrant_index[ $effective_match_id ] ?? 'Entry #' . $effective_match_id ) : null;
-            $auto_match_name      = $row['auto_match_id'] ? ( $registrant_index[ $row['auto_match_id'] ] ?? 'Entry #' . $row['auto_match_id'] ) : null;
-          ?>
+          <?php foreach ( $roommate_rows as $row ) : ?>
           <tr>
-            <td><?php echo esc_html( $row['entry_id'] ); ?></td>
-            <td><?php echo esc_html( $row['name'] ); ?></td>
-            <td style="max-width:220px;word-break:break-word;"><?php echo esc_html( $row['accommodations'] ); ?></td>
             <td>
-              <?php if ( $effective_match_name ) : ?>
-                <?php echo esc_html( $effective_match_name ); ?> <span style="color:#646970;">(#<?php echo (int) $effective_match_id; ?>)</span>
-                <?php if ( $row['override_id'] ) : ?>
-                  <span style="color:#2271b1;font-size:11px;display:block;">Manual override</span>
-                <?php elseif ( $auto_match_name ) : ?>
-                  <span style="color:#646970;font-size:11px;display:block;">Auto-matched</span>
+              <?php echo esc_html( $row['entry_id'] ); ?>
+              <?php if ( $row['leader_id'] !== null ) : ?>
+                <?php if ( $row['is_leader'] ) : ?>
+                  <span style="display:block;color:#00a32a;font-size:11px;font-weight:600;">★ Leader</span>
+                <?php else : ?>
+                  <span style="display:block;color:#646970;font-size:11px;">→ #<?php echo (int) $row['leader_id']; ?></span>
                 <?php endif; ?>
+              <?php endif; ?>
+            </td>
+            <td><?php echo esc_html( $row['name'] ); ?></td>
+            <td style="max-width:220px;word-break:break-word;">
+              <?php echo esc_html( $row['accommodations'] ); ?>
+              <?php if ( ! empty( $row['unmatched_names'] ) && empty( $row['override_ids'] ) ) : ?>
+                <div style="margin-top:4px;">
+                  <?php foreach ( $row['unmatched_names'] as $uname ) : ?>
+                    <span style="display:inline-block;background:#fcf0f1;border:1px solid #d63638;color:#d63638;border-radius:3px;padding:1px 6px;font-size:11px;margin:2px 2px 0 0;">
+                      ⚠ <?php echo esc_html( $uname ); ?> not registered
+                    </span>
+                  <?php endforeach; ?>
+                </div>
+              <?php endif; ?>
+              <?php if ( ! empty( $row['overflow_ids'] ) ) : ?>
+                <div style="margin-top:4px;">
+                  <span style="display:inline-block;background:#fff8e5;border:1px solid #dba617;color:#996800;border-radius:3px;padding:1px 6px;font-size:11px;">
+                    ⚠ Cabin full (max <?php echo (int) MANCAMP_CABIN_MAX; ?>) — <?php echo count( $row['overflow_ids'] ); ?> overflow:
+                    <?php foreach ( $row['overflow_ids'] as $oid ) : ?>
+                      <?php echo esc_html( $registrant_index[ $oid ] ?? '#' . $oid ); ?> (#<?php echo (int) $oid; ?>)<?php echo $oid !== end( $row['overflow_ids'] ) ? ', ' : ''; ?>
+                    <?php endforeach; ?>
+                  </span>
+                </div>
+              <?php endif; ?>
+            </td>
+            <td>
+              <?php if ( ! empty( $row['effective_ids'] ) ) : ?>
+                <ul style="margin:0;padding:0;list-style:none;">
+                  <?php foreach ( $row['effective_ids'] as $mid ) : ?>
+                    <li style="font-size:12px;">
+                      <?php echo esc_html( $registrant_index[ $mid ] ?? 'Entry #' . $mid ); ?>
+                      <span style="color:#646970;">(#<?php echo (int) $mid; ?>)</span>
+                    </li>
+                  <?php endforeach; ?>
+                </ul>
+                <span style="font-size:11px;color:<?php echo $row['is_override'] ? '#2271b1' : '#646970'; ?>;">
+                  <?php echo $row['is_override'] ? 'Manual override' : 'Auto-matched'; ?>
+                </span>
               <?php else : ?>
-                <span style="color:#646970;">No match found</span>
+                <span style="color:#646970;font-size:12px;">No match found</span>
               <?php endif; ?>
             </td>
             <td>
@@ -1973,18 +1964,25 @@ function mancamp_roommate_page() {
                 <?php wp_nonce_field( 'mancamp_save_roommate_match', 'mancamp_roommate_match_nonce' ); ?>
                 <input type="hidden" name="action" value="mancamp_save_roommate_match">
                 <input type="hidden" name="mancamp_roommate_entry_id" value="<?php echo esc_attr( $row['entry_id'] ); ?>">
-                <select name="mancamp_roommate_matched_id" style="max-width:180px;">
-                  <option value="0">— clear / auto —</option>
+                <input type="hidden" name="mancamp_roommate_matched_ids" class="mancamp-group-ids-<?php echo (int) $row['entry_id']; ?>" value="<?php echo esc_attr( implode( ',', $row['override_ids'] ) ); ?>">
+                <select multiple
+                  style="width:100%;height:90px;font-size:12px;"
+                  onchange="
+                    var vals = Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v!='0');
+                    document.querySelector('.mancamp-group-ids-<?php echo (int) $row['entry_id']; ?>').value = vals.join(',');
+                  ">
+                  <option value="0"<?php echo empty( $row['override_ids'] ) ? ' selected' : ''; ?>>— clear / use auto —</option>
                   <?php foreach ( $registrant_index as $reg_id => $reg_name ) :
                     if ( $reg_id === $row['entry_id'] ) continue;
+                    $selected = in_array( $reg_id, $row['override_ids'], true ) ? ' selected' : '';
                   ?>
-                    <option value="<?php echo esc_attr( $reg_id ); ?>"
-                      <?php selected( (int) ( $row['override_id'] ?? 0 ), $reg_id ); ?>>
+                    <option value="<?php echo esc_attr( $reg_id ); ?>"<?php echo $selected; ?>>
                       <?php echo esc_html( $reg_name ); ?> (#<?php echo (int) $reg_id; ?>)
                     </option>
                   <?php endforeach; ?>
                 </select>
-                <button type="submit" class="button button-small" style="margin-left:4px;">Save Match</button>
+                <p style="font-size:11px;color:#646970;margin:3px 0 4px;">Ctrl/Cmd+click to select multiple group members.</p>
+                <button type="submit" class="button button-small">Save Group</button>
               </form>
             </td>
           </tr>
@@ -2273,18 +2271,29 @@ function mancamp_get_all_form_submissions() {
 }
 
 /**
- * Fuzzy-match an accommodations text string against other registrants' names.
+ * Fuzzy-match ALL names in an accommodations text string against registered attendees.
  *
- * @param int    $entry_id          Current entry being processed (excluded from search).
+ * Returns an array with:
+ *   'matched_ids'      => int[]   — entry IDs whose names appeared in the text
+ *   'unmatched_names'  => string[] — name fragments found in the text but not yet registered
+ *   'overflow_ids'     => int[]   — entry IDs that exceeded the cabin cap
+ *
+ * Matching requires both a first AND last name token to appear in the accommodations text.
+ * Names are compared case-insensitively. The current entry is excluded from results.
+ *
+ * @param int    $entry_id            Current entry being processed (excluded from search).
  * @param string $accommodations_text Raw accommodations/roommate request text.
- * @param array  $all_submissions   Array of normalised submission rows.
- * @return int|null  Matched entry_id, or null if no match found.
+ * @param array  $all_submissions     Array of normalised submission rows.
+ * @return array{ matched_ids: int[], unmatched_names: string[], overflow_ids: int[] }
  */
-function mancamp_find_roommate_match( $entry_id, $accommodations_text, $all_submissions ) {
+function mancamp_find_roommate_matches( $entry_id, $accommodations_text, $all_submissions ) {
     $needle = strtolower( trim( $accommodations_text ) );
     if ( $needle === '' ) {
-        return null;
+        return [ 'matched_ids' => [], 'unmatched_names' => [], 'overflow_ids' => [] ];
     }
+
+    $matched_ids     = [];
+    $matched_names   = []; // first+last pairs already claimed, to subtract from unmatched scan
 
     foreach ( $all_submissions as $sub ) {
         $sub_entry_id = (int) ( $sub['id'] ?? 0 );
@@ -2296,7 +2305,7 @@ function mancamp_find_roommate_match( $entry_id, $accommodations_text, $all_subm
 
         // Resolve first/last name — try flat fields first, then people_json.
         $first = strtolower( sanitize_text_field( $form_data['first_name'] ?? '' ) );
-        $last  = strtolower( sanitize_text_field( $form_data['last_name'] ?? '' ) );
+        $last  = strtolower( sanitize_text_field( $form_data['last_name']  ?? '' ) );
 
         if ( $first === '' || $last === '' ) {
             $people_raw = $form_data['people_json'] ?? $form_data['attendees_json'] ?? '';
@@ -2313,50 +2322,212 @@ function mancamp_find_roommate_match( $entry_id, $accommodations_text, $all_subm
             continue;
         }
 
-        // Match if both first and last name appear anywhere in the text.
         if ( strpos( $needle, $first ) !== false && strpos( $needle, $last ) !== false ) {
-            return $sub_entry_id;
+            $matched_ids[]   = $sub_entry_id;
+            $matched_names[] = [ 'first' => $first, 'last' => $last ];
         }
     }
 
-    return null;
+    // ── Unmatched name detection ──────────────────────────────────────────────
+    // Strip matched names from the needle, then look for remaining capitalised
+    // word-pairs that look like "Firstname Lastname" but aren't in the registry.
+    $original_stripped = $accommodations_text;
+    foreach ( $matched_names as $mn ) {
+        // Case-insensitive removal of matched names from original text.
+        $original_stripped = preg_replace( '/\b' . preg_quote( $mn['first'], '/' ) . '\b/i', '', $original_stripped );
+        $original_stripped = preg_replace( '/\b' . preg_quote( $mn['last'],  '/' ) . '\b/i', '', $original_stripped );
+    }
+
+    $unmatched_names = [];
+    // Find sequences of 2 consecutive capitalised words — likely unregistered names.
+    if ( preg_match_all( '/\b([A-Z][a-záéíóúñüàèìòùäöü\-\']+)\s+([A-Z][a-záéíóúñüàèìòùäöü\-\']+)\b/', $original_stripped, $pairs ) ) {
+        foreach ( $pairs[0] as $pair ) {
+            $candidate = trim( $pair );
+            if ( $candidate !== '' && ! in_array( $candidate, $unmatched_names, true ) ) {
+                $unmatched_names[] = $candidate;
+            }
+        }
+    }
+
+    return mancamp_apply_cabin_cap_to_match_result( $entry_id, $matched_ids, $unmatched_names );
+}
+
+/**
+ * Internal helper: apply the cabin cap to a raw match result and return the
+ * standard { matched_ids, unmatched_names, overflow_ids } shape.
+ *
+ * @param int      $entry_id
+ * @param int[]    $matched_ids
+ * @param string[] $unmatched_names
+ * @return array
+ */
+function mancamp_apply_cabin_cap_to_match_result( $entry_id, array $matched_ids, array $unmatched_names ) {
+    $capped = mancamp_apply_cabin_cap( $entry_id, $matched_ids );
+    return [
+        'matched_ids'     => $capped['matched_ids'],
+        'unmatched_names' => $unmatched_names,
+        'overflow_ids'    => $capped['overflow_ids'],
+    ];
+}
+
+/**
+ * Determine the cabin group leader for a given entry.
+ *
+ * The leader is the lowest entry ID among all group members (including the
+ * entry itself). This ensures every member in a group consistently resolves
+ * to the same leader so GAS only allocates one lodging slot per group.
+ *
+ * @param int   $entry_id    The entry whose leader we want.
+ * @param int[] $group_ids   All other matched entry IDs in the group.
+ * @return int  The leader entry ID.
+ */
+function mancamp_resolve_group_leader( $entry_id, array $group_ids ) {
+    $all = array_merge( [ (int) $entry_id ], array_map( 'intval', $group_ids ) );
+    return min( $all );
+}
+
+/**
+ * Apply the cabin capacity cap (MANCAMP_CABIN_MAX) to a list of matched entry IDs.
+ *
+ * The group is defined as $entry_id PLUS $matched_ids (total = 1 + count($matched_ids)).
+ * If the total exceeds MANCAMP_CABIN_MAX, the leader (lowest ID) is kept in the primary
+ * group along with enough others to fill it; the remainder are returned as overflow.
+ *
+ * Returns:
+ *   'matched_ids' => int[]  — IDs that fit in this cabin (does NOT include $entry_id itself)
+ *   'overflow_ids' => int[] — IDs that spill over and need a new cabin assignment
+ *
+ * @param int   $entry_id    The current registrant (counts as 1 slot).
+ * @param int[] $matched_ids All candidate group member entry IDs.
+ * @return array{ matched_ids: int[], overflow_ids: int[] }
+ */
+function mancamp_apply_cabin_cap( $entry_id, array $matched_ids ) {
+    $entry_id   = (int) $entry_id;
+    $max        = (int) MANCAMP_CABIN_MAX;
+    $slots_left = $max - 1; // entry_id already occupies 1 slot
+
+    if ( count( $matched_ids ) <= $slots_left ) {
+        return [ 'matched_ids' => $matched_ids, 'overflow_ids' => [] ];
+    }
+
+    // Sort so leader (lowest ID) and the next IDs fill the cabin first.
+    $all_without_entry = array_merge( [ $entry_id ], array_map( 'intval', array_filter( $matched_ids, fn( $id ) => $id !== $entry_id ) ) );
+    sort( $all_without_entry );
+
+    // Take the first $max slots (including entry_id), rest are overflow.
+    $primary_group  = array_slice( $all_without_entry, 0, $max );
+    $overflow_group = array_slice( $all_without_entry, $max );
+
+    $primary_members  = array_values( array_filter( $primary_group,  fn( $id ) => $id !== $entry_id ) );
+    $overflow_members = array_values( array_filter( $overflow_group, fn( $id ) => $id !== $entry_id ) );
+
+    return [
+        'matched_ids'  => $primary_members,
+        'overflow_ids' => $overflow_members,
+    ];
 }
 
 /**
  * Build the roommateRequest sub-object for the GAS payload.
+ *
+ * Storage model — group leader:
+ *   The lowest entry ID in a cabin group is the "leader" and counts as 1 lodging slot.
+ *   All other group members point to the leader via groupLeaderRegistrationId so GAS
+ *   can send each person their own confirmation email while only debiting inventory once.
+ *
+ * Cabin cap (MANCAMP_CABIN_MAX = 4):
+ *   Groups larger than 4 total are split. The leader + 3 others stay together;
+ *   overflow entry IDs are returned in overflowIds for admin reassignment.
+ *
+ * GAS payload keys:
+ *   requestText               — raw accommodations text from the registrant
+ *   matchedRegistrationIds    — entry IDs in this cabin (capped, excl. entry itself)
+ *   overflowRegistrationIds   — entry IDs that exceeded the cabin cap (need reassignment)
+ *   unmatchedNames            — names mentioned but not yet registered (needs admin review)
+ *   groupLeaderRegistrationId — lowest entry ID in the group, or null if solo/no match
+ *   isGroupLeader             — true if this entry IS the group leader
+ *   matchStatus               — 'none' | 'matched' | 'partial' | 'override' | 'overflow'
  *
  * @param int    $entry_id
  * @param string $accommodations_text
  * @return array
  */
 function mancamp_build_roommate_request( $entry_id, $accommodations_text ) {
-    $text = trim( $accommodations_text );
+    $entry_id = (int) $entry_id;
+    $text     = trim( $accommodations_text );
+
+    if ( mancamp_debug() ) {
+        error_log( '[ManCamp][DEBUG] build_roommate_request entry_id=' . $entry_id . ' text=' . var_export( $text, true ) );
+    }
 
     if ( $text === '' ) {
         return [
-            'requestText'           => '',
-            'matchedRegistrationId' => null,
-            'matchStatus'           => 'none',
+            'requestText'               => '',
+            'matchedRegistrationIds'    => [],
+            'overflowRegistrationIds'   => [],
+            'unmatchedNames'            => [],
+            'groupLeaderRegistrationId' => null,
+            'isGroupLeader'             => false,
+            'matchStatus'               => 'none',
         ];
     }
 
-    // Check for a manual admin override first.
+    // ── Manual admin override (array of entry IDs) ────────────────────────────
     $overrides = get_option( MANCAMP_ROOMMATE_MATCHES_OPTION, [] );
-    if ( isset( $overrides[ $entry_id ] ) && $overrides[ $entry_id ] ) {
+    if ( ! empty( $overrides[ $entry_id ] ) ) {
+        $raw_ids      = is_array( $overrides[ $entry_id ] )
+            ? array_values( array_map( 'intval', $overrides[ $entry_id ] ) )
+            : [ (int) $overrides[ $entry_id ] ];
+
+        $capped       = mancamp_apply_cabin_cap( $entry_id, $raw_ids );
+        $matched_ids  = $capped['matched_ids'];
+        $overflow_ids = $capped['overflow_ids'];
+        $leader_id    = mancamp_resolve_group_leader( $entry_id, $matched_ids );
+        $status       = ! empty( $overflow_ids ) ? 'overflow' : 'override';
+
         return [
-            'requestText'           => $text,
-            'matchedRegistrationId' => (string) $overrides[ $entry_id ],
-            'matchStatus'           => 'matched',
+            'requestText'               => $text,
+            'matchedRegistrationIds'    => array_map( 'strval', $matched_ids ),
+            'overflowRegistrationIds'   => array_map( 'strval', $overflow_ids ),
+            'unmatchedNames'            => [],
+            'groupLeaderRegistrationId' => (string) $leader_id,
+            'isGroupLeader'             => $leader_id === $entry_id,
+            'matchStatus'               => $status,
         ];
     }
 
+    // ── Auto-match all names ──────────────────────────────────────────────────
     $all_submissions = mancamp_get_all_form_submissions();
-    $matched_entry_id = mancamp_find_roommate_match( $entry_id, $text, $all_submissions );
+    $result          = mancamp_find_roommate_matches( $entry_id, $text, $all_submissions );
+    $matched_ids     = $result['matched_ids'];
+    $overflow_ids    = $result['overflow_ids'];
+    $unmatched_names = $result['unmatched_names'];
+
+    if ( empty( $matched_ids ) && empty( $unmatched_names ) && empty( $overflow_ids ) ) {
+        return [
+            'requestText'               => $text,
+            'matchedRegistrationIds'    => [],
+            'overflowRegistrationIds'   => [],
+            'unmatchedNames'            => [],
+            'groupLeaderRegistrationId' => null,
+            'isGroupLeader'             => false,
+            'matchStatus'               => 'requested',
+        ];
+    }
+
+    $leader_id    = ! empty( $matched_ids ) ? mancamp_resolve_group_leader( $entry_id, $matched_ids ) : null;
+    $match_status = empty( $matched_ids )   ? 'requested'
+        : ( ! empty( $overflow_ids )        ? 'overflow'
+        : ( empty( $unmatched_names )       ? 'matched' : 'partial' ) );
 
     return [
-        'requestText'           => $text,
-        'matchedRegistrationId' => $matched_entry_id !== null ? (string) $matched_entry_id : null,
-        'matchStatus'           => $matched_entry_id !== null ? 'matched' : 'requested',
+        'requestText'               => $text,
+        'matchedRegistrationIds'    => array_map( 'strval', $matched_ids ),
+        'overflowRegistrationIds'   => array_map( 'strval', $overflow_ids ),
+        'unmatchedNames'            => $unmatched_names,
+        'groupLeaderRegistrationId' => $leader_id !== null ? (string) $leader_id : null,
+        'isGroupLeader'             => $leader_id !== null && $leader_id === $entry_id,
+        'matchStatus'               => $match_status,
     ];
 }
 

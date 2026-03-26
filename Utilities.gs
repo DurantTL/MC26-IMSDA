@@ -14,6 +14,10 @@
 // DYNAMIC COLUMN MAPPING
 // ============================================================
 
+// Request-scoped cache for getColumnNumber_ to avoid re-reading the
+// header row on every call within a single script execution.
+const COLUMN_CACHE_ = {};
+
 /**
  * Builds a map of { lowerCaseHeaderName: 0-basedArrayIndex } from
  * a sheet's first row. Use this when you already have the sheet's
@@ -72,9 +76,15 @@ function getStrippedColumnMap_(sheet) {
  * @returns {number}           1-based column number, or -1 if not found
  */
 function getColumnNumber_(sheet, headerName) {
+  const cacheKey = sheet.getSheetId() + ':' + String(headerName).trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(COLUMN_CACHE_, cacheKey)) {
+    return COLUMN_CACHE_[cacheKey];
+  }
   const map = getColumnMap_(sheet);
   const idx = map[String(headerName).trim().toLowerCase()];
-  return idx !== undefined ? idx + 1 : -1;
+  const result = idx !== undefined ? idx + 1 : -1;
+  COLUMN_CACHE_[cacheKey] = result;
+  return result;
 }
 
 /**

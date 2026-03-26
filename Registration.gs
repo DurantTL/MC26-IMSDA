@@ -109,8 +109,9 @@ function processRegistration(data) {
 
   // --- 11.5 Persist per-person lodging assignments and refresh inventory summary ---
   persistLodgingAssignments_(ss, assigned);
-  refreshLodgingInventorySheet_(ss);
-  refreshShirtInventorySheet_(ss);
+  // Move sheet rebuilds to background queue so doPost() returns faster.
+  enqueueBackgroundJob_({ type: 'refreshInventory', registrationId: registrationId });
+  enqueueBackgroundJob_({ type: 'refreshShirts', registrationId: registrationId });
 
   // --- 11. Mark RAW row as processed (if entry ID available) ---
   if (assigned.fluentFormEntryId) {
@@ -315,9 +316,15 @@ function writeRegistrationRow_(ss, data) {
 function writeRosterRows_(ss, data) {
   const sheet  = ss.getSheetByName(CONFIG.sheets.roster);
   const roster = data.roster;
+  if (!roster || roster.length === 0) return;
 
-  roster.forEach(person => {
-    appendRowFromObject_(sheet, {
+  // Read header row once and build all person row arrays in memory,
+  // then write the entire batch with a single setValues call.
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+
+  const rows = roster.map(person => {
+    const rowObj = {
       registration_id:         data.registrationId,
       attendee_id:             person.id || '',
       attendee_name:           person.name || '',
@@ -337,7 +344,6 @@ function writeRosterRows_(ss, data) {
       last_name:               person.lastName || '',
       email:                   person.email || data.registrantEmail || '',
       phone:                   person.phone || data.registrantPhone || '',
-      age:                     person.age || '',
       age_group:               person.ageGroup || '',
       is_minor:                person.isMinor ? 'Yes' : 'No',
       is_guardian:             person.isGuardian ? 'Yes' : 'No',
@@ -364,8 +370,15 @@ function writeRosterRows_(ss, data) {
       assigned_lodging_area:   person.assignedLodgingArea || '',
       notes:                   person.notes || '',
       created_at:              person.createdAt || data.timestamp
+    };
+    return headers.map(header => {
+      const key = String(header).trim().toLowerCase();
+      return Object.prototype.hasOwnProperty.call(rowObj, key) ? rowObj[key] : '';
     });
   });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(lastRow + 1, 1, rows.length, headers.length).setValues(rows);
 }
 
 function processCampingGroup_(ss, data) {

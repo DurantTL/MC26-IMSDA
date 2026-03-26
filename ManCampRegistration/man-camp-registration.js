@@ -534,7 +534,8 @@
         attendance_type: person.attendance_type,
         is_guardian: person.is_guardian,
         guardian_link_key: person.guardian_link_key,
-        is_primary: person.is_primary
+        is_primary: person.is_primary,
+        lodging_option_key: optionByKey(state.lodging.type).key,
       }));
       const peopleJson = JSON.stringify(payloadPeople);
       const lodgingJson = JSON.stringify(lodgingRequest());

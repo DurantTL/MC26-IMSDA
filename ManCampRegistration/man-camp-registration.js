@@ -291,6 +291,7 @@
     // gasUrl comes from wp_localize_script (never exposed in HTML markup).
     // data-gas-url attribute is kept as a local dev override only.
     const gasUrl = settings.gasUrl || container.getAttribute('data-gas-url') || '';
+    var _paymentAmountNotifyTimer = null;
     const primaryFields = {
       first_name: getField(form, 'first_name'),
       last_name: getField(form, 'last_name'),
@@ -730,13 +731,16 @@
       } finally {
         _isSyncing = false;
       }
-      CONTRACT.customPaymentAmountFields.forEach(function (name) {
-        var f = getField(form, name);
-        if (f) {
-          f.dispatchEvent(new Event('input', { bubbles: true }));
-          f.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      });
+      window.clearTimeout(_paymentAmountNotifyTimer);
+      _paymentAmountNotifyTimer = window.setTimeout(function () {
+        CONTRACT.customPaymentAmountFields.forEach(function (name) {
+          var f = getField(form, name);
+          if (f) {
+            f.dispatchEvent(new Event('input', { bubbles: true }));
+            f.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+      }, 150);
       const people = synced.people;
       const totals = synced.totals;
       const primaryShirts = getEffectiveShirtInventory(state.shirtInventory, rawPeople, 0);

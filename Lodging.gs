@@ -79,10 +79,6 @@ function getLodgingDefinitions_() {
   ];
 }
 
-function getLodgingDefinitionByPreference_(lodgingPreference) {
-  return getLodgingDefinitions_().find(def => def.key === lodgingPreference) || null;
-}
-
 function checkLodgingCapacity(ss, lodgingPreference, requestedUnits, excludeRegistrationId) {
   const definition = getLodgingDefinitionByPreference_(lodgingPreference);
   if (!definition) {

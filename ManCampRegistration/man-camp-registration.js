@@ -730,6 +730,13 @@
       } finally {
         _isSyncing = false;
       }
+      CONTRACT.customPaymentAmountFields.forEach(function (name) {
+        var f = getField(form, name);
+        if (f) {
+          f.dispatchEvent(new Event('input', { bubbles: true }));
+          f.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
       const people = synced.people;
       const totals = synced.totals;
       const primaryShirts = getEffectiveShirtInventory(state.shirtInventory, rawPeople, 0);
@@ -1313,6 +1320,13 @@
       } finally {
         _isSyncing = false;
       }
+      CONTRACT.customPaymentAmountFields.forEach(function (name) {
+        var f = getField(form, name);
+        if (f) {
+          f.dispatchEvent(new Event('input', { bubbles: true }));
+          f.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
       window.console.info(
         '[ManCamp][DEBUG] hidden lodging fields before submit:',
         {

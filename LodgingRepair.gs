@@ -165,6 +165,7 @@ function repairOrAuditLodgingInternal_(dryRun) {
   const numCols = regSheet.getLastColumn();
   const headers = regSheet.getRange(1, 1, 1, numCols).getValues()[0];
   const allRows = regSheet.getRange(2, 1, lastRow - 1, numCols).getValues();
+  const rawLookup = buildRawHistoricalLookup_(ss);
 
   const logSheet = getOrCreateLodgingRepairLogSheet_(ss);
   const logRows  = [];
@@ -184,15 +185,16 @@ function repairOrAuditLodgingInternal_(dryRun) {
     const currentLodging = String(row['lodging_preference'] || row['lodging_option_key'] || '').trim();
 
     const structural = evaluateStructuralValidity_(row, entryId);
-    const attendeeInfo = computeAttendeeCounts_(row, structural.rosterPeople);
-    const registrationTotal = attendeeInfo.registrationTotal;
+    const historical = getAuthoritativeHistoricalValues_(row, entryId, rawLookup);
+    const attendeeInfo = computeAttendeeCounts_(row, structural.rosterPeople, historical);
+    const registrationTotal = attendeeInfo.registrationTotalUsed;
 
     const normalizedLodging = normalizeLodgingKeyForAudit_(currentLodging, {
       registrationTotal: registrationTotal,
       attendeeCount: attendeeInfo.billedCount
     });
 
-    const pluginDeclared = extractPluginDeclaredLodgingForRepair_(row, structural.rosterPeople, attendeeInfo);
+    const pluginDeclared = extractPluginDeclaredLodgingForRepair_(row, structural.rosterPeople, attendeeInfo, historical);
     const priceEval = evaluatePricePlausibility_(registrationTotal, attendeeInfo);
 
     const noteFlags = getSpecialNotesPresence_(row);
@@ -210,6 +212,7 @@ function repairOrAuditLodgingInternal_(dryRun) {
       structural: structural,
       attendeeInfo: attendeeInfo,
       priceEval: priceEval,
+      historical: historical,
       specialNote: SPECIAL_NOTES[entryId] || '',
       isTest: !!TEST_ENTRIES[entryId],
       isDuplicate: !!DUPLICATE_ENTRIES[entryId]
@@ -244,8 +247,8 @@ function repairOrAuditLodgingInternal_(dryRun) {
       pluginDeclared,
       priceEval,
       normalizedLodging,
-      registrationTotal,
-      attendeeInfo.attendeeCountFromRow,
+      attendeeInfo,
+      historical,
       decision
     ));
   }
@@ -329,6 +332,18 @@ function parseJsonObjectSafe_(value) {
   }
 }
 
+function parseJsonArraySafe_(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
 function normalizeDeclaredLodgingKey_(value) {
   if (typeof canonicalizePluginLodgingKey_ === 'function') {
     return canonicalizePluginLodgingKey_(value);
@@ -345,11 +360,14 @@ function normalizeDeclaredLodgingKey_(value) {
   return '';
 }
 
-function extractPluginDeclaredLodgingForRepair_(row, rosterPeople, attendeeInfo) {
-  const payload = parseJsonObjectSafe_(row['payload_json']);
+function extractPluginDeclaredLodgingForRepair_(row, rosterPeople, attendeeInfo, historical) {
+  const payload = historical.rawPayload || parseJsonObjectSafe_(row['payload_json']);
   const payloadType = normalizeDeclaredLodgingKey_(payload && payload.lodgingRequest && payload.lodgingRequest.type);
   if (payloadType) {
     return { lodging: payloadType, source: 'payload.lodgingRequest.type', consistent: true };
+  }
+  if (historical.rawLodgingType) {
+    return { lodging: historical.rawLodgingType, source: 'raw.payload.lodgingRequest.type', consistent: true };
   }
 
   const lodgingReq = parseJsonObjectSafe_(row['lodging_request_json']);
@@ -363,7 +381,9 @@ function extractPluginDeclaredLodgingForRepair_(row, rosterPeople, attendeeInfo)
     return { lodging: topLevel, source: 'lodging_option_key', consistent: true };
   }
 
-  const people = Array.isArray(rosterPeople) ? rosterPeople : [];
+  const people = historical.rawPeople && historical.rawPeople.length
+    ? historical.rawPeople
+    : (Array.isArray(rosterPeople) ? rosterPeople : []);
   const attendeeKeys = people.map(function(person) {
     return normalizeDeclaredLodgingKey_(person.lodging_option_key || person.lodgingOptionKey);
   }).filter(Boolean);
@@ -396,7 +416,7 @@ function evaluateStructuralValidity_(row, entryId) {
 /**
  * Computes attendee counts and attendee-mix flags used by heuristic logic.
  */
-function computeAttendeeCounts_(row, rosterPeople) {
+function computeAttendeeCounts_(row, rosterPeople, historical) {
   const people = Array.isArray(rosterPeople) ? rosterPeople : [];
   let volunteerCount = 0;
   let minorCount = 0;
@@ -418,20 +438,32 @@ function computeAttendeeCounts_(row, rosterPeople) {
   const regTotal = safeNumber_(row['registration_total']);
   const estimatedTotal = safeNumber_(row['estimated_total']);
   const frontendTotal = safeNumber_(row['frontend_total']);
-  const registrationTotal = regTotal !== null
+  const storedRegistrationTotal = regTotal !== null
     ? regTotal
     : (estimatedTotal !== null ? estimatedTotal : (frontendTotal !== null ? frontendTotal : 0));
 
   const explicitAttendeeCount = safeNumber_(row['attendee_count']);
+  const rawRegistrationTotal = safeNumber_(historical && historical.rawRegistrationTotal);
+  const rawAttendeeCount = safeNumber_(historical && historical.rawAttendeeCount);
+  const registrationTotalUsed = rawRegistrationTotal !== null ? rawRegistrationTotal : storedRegistrationTotal;
+  const attendeeCountUsed = rawAttendeeCount !== null
+    ? rawAttendeeCount
+    : (explicitAttendeeCount !== null ? explicitAttendeeCount : totalCount);
 
   return {
     totalCount: totalCount,
     volunteerCount: volunteerCount,
     minorCount: minorCount,
     billedCount: billedCount,
-    registrationTotal: registrationTotal,
+    registrationTotalUsed: registrationTotalUsed,
+    storedRegistrationTotal: storedRegistrationTotal,
+    rawRegistrationTotal: rawRegistrationTotal,
+    totalSourceUsed: rawRegistrationTotal !== null ? 'RAW' : 'STORED',
+    rawAttendeeCount: rawAttendeeCount,
+    storedAttendeeCount: explicitAttendeeCount !== null ? explicitAttendeeCount : totalCount,
+    attendeeCountSourceUsed: rawAttendeeCount !== null ? 'RAW' : 'STORED',
     attendeeCountFromRow: explicitAttendeeCount !== null ? explicitAttendeeCount : totalCount,
-    hasGroupComplexity: totalCount > 1
+    attendeeCountForPricing: attendeeCountUsed
   };
 }
 
@@ -440,7 +472,7 @@ function computeAttendeeCounts_(row, rosterPeople) {
  */
 function evaluatePricePlausibility_(registrationTotal, attendeeInfo) {
   const total = safeNumber_(registrationTotal);
-  const attendeeCount = Math.max(safeNumber_(attendeeInfo.attendeeCountFromRow) || 0, 0);
+  const attendeeCount = Math.max(safeNumber_(attendeeInfo.attendeeCountForPricing) || 0, 0);
 
   if (total === null || total <= 0 || attendeeCount < 1) {
     return {
@@ -513,8 +545,7 @@ function buildComplexityFlags_(ctx) {
   const flags = [];
   if (ctx.attendeeInfo.volunteerCount > 0) flags.push('volunteer');
   if (ctx.attendeeInfo.minorCount > 0) flags.push('minor');
-  if (ctx.attendeeInfo.hasGroupComplexity) flags.push('group');
-  if (hasRoommateComplexity_(ctx.row)) flags.push('roommate');
+  if (!ctx.priceEval.unambiguousGuess) flags.push('ambiguous_total');
   if (ctx.noteFlags.length > 0) flags.push('special_notes');
   if (ctx.specialNote) flags.push('special_case_id');
   return flags;
@@ -522,7 +553,7 @@ function buildComplexityFlags_(ctx) {
 
 function computeDecisionFlags_(ctx) {
   const complexityFlags = buildComplexityFlags_(ctx);
-  const attendeeCount = safeNumber_(ctx.attendeeInfo.attendeeCountFromRow) || 0;
+  const attendeeCount = safeNumber_(ctx.attendeeInfo.attendeeCountForPricing) || 0;
   const hasValidEntryId = String(ctx.entryId || '').trim() !== '';
   const simpleRowEligible = !ctx.isTest &&
     !ctx.isDuplicate &&
@@ -536,6 +567,7 @@ function computeDecisionFlags_(ctx) {
     complexityFlags: complexityFlags,
     hasValidEntryId: hasValidEntryId,
     attendeeCount: attendeeCount,
+    roommateIgnoredForPricingRepair: hasRoommateComplexity_(ctx.row),
     simpleRowEligible: simpleRowEligible,
     isSimpleRow: simpleRowEligible
   };
@@ -656,7 +688,8 @@ function buildDecisionResult_(status, correctedLodging, decisionBranch, reasonPa
       complexityFlags: flags.complexityFlags,
       isSimpleRow: flags.isSimpleRow,
       simpleRowEligible: flags.simpleRowEligible,
-      attendeeCount: flags.attendeeCount
+      attendeeCount: flags.attendeeCount,
+      roommateIgnoredForPricingRepair: !!flags.roommateIgnoredForPricingRepair
     }
   };
 }
@@ -804,10 +837,18 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
     'email',
     'pluginDeclaredLodging',
     'currentStoredLodging',
-    'registrationTotal',
-    'attendeeCount',
+    'rawRegistrationTotal',
+    'storedRegistrationTotal',
+    'totalSourceUsed',
+    'rawAttendeeCount',
+    'storedAttendeeCount',
+    'attendeeCountSourceUsed',
+    'registrationTotalUsed',
+    'attendeeCountUsed',
     'perPersonPrice',
     'expectedLodgingFromPrice',
+    'repairSource',
+    'roommateIgnoredForPricingRepair',
     'simpleRowEligible',
     'repairEligible',
     'finalStatus',
@@ -837,7 +878,7 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
 function buildLogRow_(
   entryId, registrantName, email,
   pluginDeclared, priceEval, currentStoredLodging,
-  registrationTotal, attendeeCount, decision
+  attendeeInfo, historical, decision
 ) {
   const debug = decision.debug || {};
   return [
@@ -846,10 +887,18 @@ function buildLogRow_(
     email,
     pluginDeclared.lodging || '',
     currentStoredLodging || '',
-    registrationTotal,
-    attendeeCount,
+    attendeeInfo.rawRegistrationTotal,
+    attendeeInfo.storedRegistrationTotal,
+    attendeeInfo.totalSourceUsed,
+    attendeeInfo.rawAttendeeCount,
+    attendeeInfo.storedAttendeeCount,
+    attendeeInfo.attendeeCountSourceUsed,
+    attendeeInfo.registrationTotalUsed,
+    attendeeInfo.attendeeCountForPricing,
     priceEval.perPersonAmount,
     priceEval.unambiguousGuess || '',
+    historical.sourceUsed || 'STORED',
+    debug.roommateIgnoredForPricingRepair ? 'TRUE' : 'FALSE',
     debug.simpleRowEligible ? 'TRUE' : 'FALSE',
     decision.repairEligible ? 'TRUE' : 'FALSE',
     decision.status,
@@ -872,7 +921,7 @@ function writeRepairLogRows_(sheet, logRows) {
 
   const startRow  = 2;
   const numCols   = logRows[0].length;
-  const statusIdx = 11; // 0-based index of finalStatus
+  const statusIdx = 19; // 0-based index of finalStatus
 
   sheet.getRange(startRow, 1, logRows.length, numCols).setValues(logRows);
 
@@ -897,4 +946,61 @@ function writeRepairLogRows_(sheet, logRows) {
       sheet.getRange(rowNum, 1, 1, numCols).setBackground(bg);
     }
   });
+}
+
+function buildRawHistoricalLookup_(ss) {
+  const rawSheet = ss.getSheetByName(CONFIG.sheets.raw);
+  if (!rawSheet || rawSheet.getLastRow() < 2) return {};
+
+  const headers = rawSheet.getRange(1, 1, 1, rawSheet.getLastColumn()).getValues()[0];
+  const values = rawSheet.getRange(2, 1, rawSheet.getLastRow() - 1, rawSheet.getLastColumn()).getValues();
+  const lookup = {};
+
+  values.forEach(function(rowVals) {
+    const row = rowObjectFromHeaders_(headers, rowVals);
+    const id = String(row['entry_id'] || row['fluent_form_entry_id'] || '').trim();
+    if (!id || lookup[id]) return;
+    lookup[id] = row;
+  });
+
+  return lookup;
+}
+
+function getAuthoritativeHistoricalValues_(registrationRow, entryId, rawLookup) {
+  const rawRow = rawLookup && rawLookup[entryId] ? rawLookup[entryId] : null;
+  const rawPayload = rawRow
+    ? parseJsonObjectSafe_(rawRow['payload_json'])
+    : parseJsonObjectSafe_(registrationRow['payload_json']);
+  const payload = rawPayload || {};
+  const rawPeople = parseJsonArraySafe_(payload.people || payload.roster);
+
+  const rawRegistrationTotal = safeNumber_(
+    payload.payment
+      ? (payload.payment.registrationTotal !== undefined
+        ? payload.payment.registrationTotal
+        : payload.payment.registration_total)
+      : null
+  );
+
+  const rawAttendeeCountField = safeNumber_(payload.attendeeCount);
+  const rawAttendeeCount = rawAttendeeCountField !== null
+    ? rawAttendeeCountField
+    : (rawPeople.length > 0 ? rawPeople.length : null);
+
+  const rawLodgingType = normalizeDeclaredLodgingKey_(
+    payload.lodgingRequest && payload.lodgingRequest.type
+  );
+  const rawAttendeeLodgingKeys = rawPeople.map(function(person) {
+    return normalizeDeclaredLodgingKey_(person.lodging_option_key || person.lodgingOptionKey);
+  }).filter(Boolean);
+
+  return {
+    sourceUsed: rawRow ? 'RAW' : 'STORED',
+    rawPayload: rawPayload,
+    rawRegistrationTotal: rawRegistrationTotal,
+    rawAttendeeCount: rawAttendeeCount,
+    rawPeople: rawPeople,
+    rawLodgingType: rawLodgingType,
+    rawAttendeeLodgingKeys: rawAttendeeLodgingKeys
+  };
 }

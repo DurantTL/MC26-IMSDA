@@ -53,6 +53,7 @@
   const LODGING_LOW_THRESHOLD = 10;
   const RETRY_LIMIT = 40;
   const RETRY_DELAY_MS = 250;
+  const SUBMISSION_TIMEOUT_MS = 25000;
 
   // When true, setFieldValue writes values silently (no events dispatched).
   // Set during the final sync inside handleFormSubmit so Fluent Forms' own
@@ -334,8 +335,104 @@
       draftErrors: {},
       rosterError: '',
       availabilityWarning: '',
-      paymentMethod: 'square'
+      paymentMethod: 'square',
+      overlayIntervalId: null,
+      overlayTimeoutId: null,
+      submitInFlight: false,
+      timeoutDismissEnabled: false
     };
+
+    function getOverlayElement() {
+      return document.getElementById('mc-payment-overlay');
+    }
+
+    function getOverlayStatusElement() {
+      return document.querySelector('[data-mc-status]');
+    }
+
+    function setOverlayStatusMessage(message) {
+      const el = getOverlayStatusElement();
+      if (!el) return;
+      el.textContent = message;
+    }
+
+    function stopOverlayMessageCycle() {
+      if (state.overlayIntervalId) {
+        window.clearInterval(state.overlayIntervalId);
+        state.overlayIntervalId = null;
+        window.console.info('[ManCamp][DEBUG] overlay interval cleared');
+      }
+    }
+
+    function clearOverlayTimeout() {
+      if (state.overlayTimeoutId) {
+        window.clearTimeout(state.overlayTimeoutId);
+        state.overlayTimeoutId = null;
+      }
+    }
+
+    function hidePaymentOverlay(reason) {
+      const overlay = getOverlayElement();
+      if (!overlay) return;
+      overlay.remove();
+      window.console.info('[ManCamp][DEBUG] overlay hidden:', reason || 'unspecified');
+    }
+
+    function clearSubmissionUi(reason) {
+      stopOverlayMessageCycle();
+      clearOverlayTimeout();
+      hidePaymentOverlay(reason);
+      state.timeoutDismissEnabled = false;
+    }
+
+    function handleSubmissionTimeout() {
+      stopOverlayMessageCycle();
+      state.submitInFlight = false;
+      state.timeoutDismissEnabled = true;
+      setOverlayStatusMessage('Still submitting… Please wait or check for duplicate entries before trying again.');
+      const overlay = getOverlayElement();
+      if (overlay && !overlay.querySelector('[data-mc-timeout-dismiss]')) {
+        const warning = document.createElement('p');
+        warning.style.cssText = 'color:#ffd6d6;font-size:13px;margin:12px 0 0;text-align:center;max-width:420px;';
+        warning.textContent = 'Submission is taking longer than expected. You may dismiss this overlay and verify whether your entry was received.';
+
+        const dismissBtn = document.createElement('button');
+        dismissBtn.type = 'button';
+        dismissBtn.setAttribute('data-mc-timeout-dismiss', '');
+        dismissBtn.style.cssText = 'margin-top:14px;padding:8px 14px;border-radius:4px;border:1px solid rgba(255,255,255,0.6);background:transparent;color:#fff;cursor:pointer;';
+        dismissBtn.textContent = 'Dismiss overlay';
+        dismissBtn.addEventListener('click', function () {
+          clearSubmissionUi('timeout-dismiss');
+        });
+
+        overlay.appendChild(warning);
+        overlay.appendChild(dismissBtn);
+      }
+      window.console.warn('[ManCamp][DEBUG] submission timeout reached');
+    }
+
+    function markSubmissionFinished(status) {
+      if (!state.submitInFlight && !state.timeoutDismissEnabled) {
+        return;
+      }
+      state.submitInFlight = false;
+      state.timeoutDismissEnabled = false;
+      clearSubmissionUi(status);
+      window.console.info('[ManCamp][DEBUG] submission finished:', status);
+    }
+
+    function matchesCurrentForm(candidateForm) {
+      if (!candidateForm) return false;
+      return candidateForm === form || candidateForm === form.id || candidateForm.id === form.id;
+    }
+
+    function isFinalSubmitButton(btn) {
+      if (!btn) return false;
+      if (btn.closest('.ff-btn-next, .ff-btn-prev, [data-action="next"], [data-action="prev"], [data-step-action="next"], [data-step-action="prev"]')) {
+        return false;
+      }
+      return !!btn.matches('.ff-btn-submit, .ff_submit_btn, button[type="submit"], input[type="submit"]');
+    }
 
     function readPrimaryPerson() {
       return {
@@ -1123,6 +1220,10 @@
     }
 
     function showPaymentOverlay() {
+      if (getOverlayElement()) {
+        window.console.info('[ManCamp][DEBUG] overlay already visible; skipping duplicate create');
+        return;
+      }
       var overlay = document.createElement('div');
       overlay.id = 'mc-payment-overlay';
       overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(18,52,77,0.92);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;';
@@ -1147,6 +1248,7 @@
       overlay.appendChild(primary);
       overlay.appendChild(secondary);
       document.body.appendChild(overlay);
+      window.console.info('[ManCamp][DEBUG] overlay shown');
     }
 
     function startOverlayMessageCycle() {
@@ -1157,19 +1259,33 @@
         'Almost done \u2014 saving your details\u2026'
       ];
       var index = 0;
-      setInterval(function () {
+      stopOverlayMessageCycle();
+      state.overlayIntervalId = window.setInterval(function () {
         index = (index + 1) % messages.length;
-        var el = document.querySelector('[data-mc-status]');
-        if (el) {
-          el.textContent = messages[index];
+        if (!state.submitInFlight) {
+          stopOverlayMessageCycle();
+          return;
         }
+        setOverlayStatusMessage(messages[index]);
       }, 3000);
+      window.console.info('[ManCamp][DEBUG] overlay interval started');
+
+      clearOverlayTimeout();
+      state.overlayTimeoutId = window.setTimeout(handleSubmissionTimeout, SUBMISSION_TIMEOUT_MS);
     }
 
     function handleSubmitClick(event) {
-      // Only intercept actual submit/next buttons, not arbitrary clicks.
-      const btn = event.target.closest('[type="submit"], .ff-btn-submit, .ff-btn-next, button[class*="submit"]');
+      // Only intercept final submit buttons, not navigation buttons.
+      const btn = event.target.closest('button, input[type="submit"], input[type="button"]');
       if (!btn) return;
+      if (!isFinalSubmitButton(btn)) return;
+
+      if (state.submitInFlight) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.console.warn('[ManCamp][DEBUG] duplicate submit blocked while submission in flight');
+        return;
+      }
 
       state.rosterError = '';
       const primaryValid = validatePrimary();
@@ -1211,8 +1327,41 @@
           lodging_request_json: readFieldValue(form, CONTRACT.lodgingRequestField)
         }
       );
+      state.submitInFlight = true;
       showPaymentOverlay();
       startOverlayMessageCycle();
+    }
+
+    const ffEventMap = {
+      fluentform_submission_success: 'success',
+      fluentform_submission_failed: 'failure',
+      fluentform_submission_error: 'error',
+      fluentform_submission_validation_failed: 'validation-error',
+      fluentform_validation_failed: 'validation-error'
+    };
+
+    Object.keys(ffEventMap).forEach((eventName) => {
+      document.addEventListener(eventName, (evt) => {
+        const detail = evt && evt.detail ? evt.detail : null;
+        const detailForm = detail && (detail.form || detail.formEl || detail.formElement);
+        if (detailForm && !matchesCurrentForm(detailForm)) return;
+        markSubmissionFinished(ffEventMap[eventName]);
+      });
+    });
+
+    form.addEventListener('invalid', () => {
+      markSubmissionFinished('validation-error');
+    }, true);
+
+    if (window.jQuery && window.jQuery.fn && window.jQuery(document).on) {
+      window.jQuery(document).on(
+        'fluentform_submission_success fluentform_submission_failed fluentform_submission_error fluentform_submission_validation_failed fluentform_validation_failed',
+        function (evt, data, formRef) {
+          if (formRef && !matchesCurrentForm(formRef)) return;
+          const mappedStatus = ffEventMap[evt.type] || 'unknown';
+          markSubmissionFinished(mappedStatus);
+        }
+      );
     }
 
     Object.values(primaryFields).forEach((field) => {

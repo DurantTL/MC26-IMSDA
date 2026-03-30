@@ -36,20 +36,85 @@ function getAvailability() {
 }
 
 function getRegistrationOptionDefinitions_() {
-  return Object.keys(CONFIG.registrationOptions).map(key => {
+  const definitions = CONFIG && CONFIG.registrationOptions ? CONFIG.registrationOptions : {};
+  return Object.keys(definitions).map(key => {
     const option = CONFIG.registrationOptions[key];
-    const lodgingDefinition = getLodgingDefinitionByPreference_(option.inventoryCategory);
+    const lodgingDefinition = resolveLodgingDefinitionForInventory_(option.inventoryCategory);
     return Object.assign({}, option, {
-      publicCapacity: lodgingDefinition ? lodgingDefinition.publicCapacity : '',
-      isUnlimited: lodgingDefinition ? lodgingDefinition.isUnlimited : !!option.countsAsUnlimited
+      publicCapacity: lodgingDefinition ? lodgingDefinition.publicCapacity : 0,
+      isUnlimited: lodgingDefinition ? lodgingDefinition.isUnlimited : !!option.countsAsUnlimited,
+      price: lodgingDefinition && typeof lodgingDefinition.price === 'number'
+        ? lodgingDefinition.price
+        : (typeof option.price === 'number' ? option.price : 0)
     });
   });
 }
 
 function getRegistrationOptionByKey_(optionKey) {
-  const normalized = normalizeLodgingPreference_(optionKey);
+  const normalized = normalizeLodgingPreferenceSafe_(optionKey);
   const match = getRegistrationOptionDefinitions_().find(option => option.key === normalized);
   return match || null;
+}
+
+function resolveLodgingDefinitionForInventory_(preference) {
+  if (typeof getLodgingDefinitionByPreference_ === 'function') {
+    const resolved = getLodgingDefinitionByPreference_(preference);
+    if (resolved) return resolved;
+  }
+  return buildDefaultLodgingDefinition_(preference);
+}
+
+function getLodgingDefinitionByPreference_(preference) {
+  const normalized = normalizeLodgingPreferenceSafe_(preference);
+  if (!normalized) return null;
+
+  if (typeof getLodgingDefinitions_ === 'function') {
+    const fromDefinitions = getLodgingDefinitions_().find(def => def && def.key === normalized);
+    if (fromDefinitions) {
+      return Object.assign({}, fromDefinitions, {
+        publicCapacity: fromDefinitions.isUnlimited ? '' : Number(fromDefinitions.publicCapacity) || 0,
+        isUnlimited: !!fromDefinitions.isUnlimited,
+        price: getDefaultLodgingPrice_(normalized)
+      });
+    }
+  }
+
+  return buildDefaultLodgingDefinition_(normalized);
+}
+
+function buildDefaultLodgingDefinition_(preference) {
+  const normalized = normalizeLodgingPreferenceSafe_(preference);
+  const defaults = {
+    shared_cabin_connected: { publicCapacity: 120, isUnlimited: false, price: 120 },
+    shared_cabin_detached: { publicCapacity: 100, isUnlimited: false, price: 100 },
+    rv_hookups: { publicCapacity: 90, isUnlimited: false, price: 90 },
+    tent_no_hookups: { publicCapacity: 80, isUnlimited: false, price: 80 },
+    sabbath_attendance_only: { publicCapacity: 70, isUnlimited: false, price: 70 }
+  };
+  const match = defaults[normalized];
+  if (!match) return null;
+  return {
+    key: normalized,
+    label: normalized,
+    inventoryType: 'public_capacity',
+    publicCapacity: match.publicCapacity,
+    isUnlimited: !!match.isUnlimited,
+    price: match.price
+  };
+}
+
+function getDefaultLodgingPrice_(preference) {
+  const normalized = normalizeLodgingPreferenceSafe_(preference);
+  const option = CONFIG && CONFIG.registrationOptions && CONFIG.registrationOptions[normalized];
+  if (option && typeof option.price === 'number') return option.price;
+  const fallback = buildDefaultLodgingDefinition_(normalized);
+  return fallback ? fallback.price : 0;
+}
+
+function normalizeLodgingPreferenceSafe_(value) {
+  if (typeof normalizeLodgingPreference_ === 'function') return normalizeLodgingPreference_(value);
+  const raw = String(value || '').trim().toLowerCase();
+  return raw;
 }
 
 function calculateRemainingShirtInventory_(ss, excludeRegistrationId) {
@@ -99,7 +164,7 @@ function checkInventoryAvailability_(ss, normalized, excludeRegistrationId) {
     messages: []
   };
 
-  const option = getRegistrationOptionByKey_(normalized.lodgingOptionKey || normalized.lodgingPreference || '');
+  const option = getRegistrationOptionByKey_(normalized && (normalized.lodgingOptionKey || normalized.lodgingPreference || ''));
   if (!option) {
     result.valid = false;
     result.messages.push('Unknown registration option.');

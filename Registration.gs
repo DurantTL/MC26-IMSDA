@@ -551,10 +551,10 @@ function normalizeRegistrationSubmission_(data) {
     ? { registrationTotal: registrationTotal, attendeeCount: attendeeCount }
     : null;
 
+  const pluginDeclared = extractPluginDeclaredLodgingFromSubmission_(data, peopleInput);
   const lodgingPreference = normalizeLodgingPreference_(
-    data.lodging_option_key
+    pluginDeclared.lodgingKey
       || data.lodging_preference
-      || (data.lodgingRequest && data.lodgingRequest.type)
       || data.lodgingPreference
       || '',
     lodgingPriceContext
@@ -819,6 +819,66 @@ function normalizeAgeGroup_(person) {
   return !isNaN(age) && age < CONFIG.ageRules.adultMinAge ? 'child' : 'adult';
 }
 
+
+function canonicalizePluginLodgingKey_(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+
+  const valid = CONFIG.lodging.validation.validPreferences || [];
+  if (valid.includes(raw)) return raw;
+  if (raw === 'cabin_with_bath' || raw === 'shared cabin - connected restroom, linens provided') return 'shared_cabin_connected';
+  if (raw === 'cabin_without_bath' || raw === 'shared cabin - detached restroom/shower, bring your own linens') return 'shared_cabin_detached';
+  if (raw === 'rv') return 'rv_hookups';
+  if (raw === 'tent') return 'tent_no_hookups';
+  if (raw === 'sabbath_only' || raw === 'sabbath attendance only') return 'sabbath_attendance_only';
+  return '';
+}
+
+function parseJsonObjectMaybe_(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function extractPluginDeclaredLodgingFromSubmission_(data, peopleInput) {
+  const fromPayloadRequest = canonicalizePluginLodgingKey_(data.lodgingRequest && data.lodgingRequest.type);
+  if (fromPayloadRequest) {
+    return { lodgingKey: fromPayloadRequest, source: 'payload.lodgingRequest.type', consistent: true };
+  }
+
+  const lodgingReqJson = parseJsonObjectMaybe_(data.lodging_request_json || data.lodgingRequestJson || data.lodging_request);
+  const fromRequestJson = canonicalizePluginLodgingKey_(lodgingReqJson && lodgingReqJson.type);
+  if (fromRequestJson) {
+    return { lodgingKey: fromRequestJson, source: 'lodging_request_json.type', consistent: true };
+  }
+
+  const fromTopLevel = canonicalizePluginLodgingKey_(data.lodging_option_key);
+  if (fromTopLevel) {
+    return { lodgingKey: fromTopLevel, source: 'lodging_option_key', consistent: true };
+  }
+
+  const people = Array.isArray(peopleInput) ? peopleInput : [];
+  const attendeeKeys = people.map(function(person) {
+    return canonicalizePluginLodgingKey_(person.lodging_option_key || person.lodgingOptionKey);
+  }).filter(Boolean);
+
+  if (!attendeeKeys.length) {
+    return { lodgingKey: '', source: '', consistent: false };
+  }
+
+  const unique = attendeeKeys.filter(function(key, idx, arr) { return arr.indexOf(key) === idx; });
+  if (unique.length === 1) {
+    return { lodgingKey: unique[0], source: 'people[].lodging_option_key', consistent: true };
+  }
+
+  return { lodgingKey: '', source: 'people[].lodging_option_key', consistent: false };
+}
+
 /**
  * Normalizes a raw lodging preference string to a canonical key.
  *
@@ -830,14 +890,8 @@ function normalizeAgeGroup_(person) {
  *                                tent_no_hookups.
  */
 function normalizeLodgingPreference_(value, context) {
-  const raw = String(value || '').trim().toLowerCase();
-  const valid = CONFIG.lodging.validation.validPreferences;
-  if (valid.includes(raw)) return raw;
-  if (raw === 'cabin_with_bath' || raw === 'shared cabin - connected restroom, linens provided') return 'shared_cabin_connected';
-  if (raw === 'cabin_without_bath' || raw === 'shared cabin - detached restroom/shower, bring your own linens') return 'shared_cabin_detached';
-  if (raw === 'rv') return 'rv_hookups';
-  if (raw === 'tent') return 'tent_no_hookups';
-  if (raw === 'sabbath_only' || raw === 'sabbath attendance only') return 'sabbath_attendance_only';
+  const canonical = canonicalizePluginLodgingKey_(value);
+  if (canonical) return canonical;
 
   // Price-based fallback of last resort: use per-person price to infer key
   if (context && Number(context.registrationTotal) > 0 && Number(context.attendeeCount) > 0) {
@@ -846,6 +900,7 @@ function normalizeLodgingPreference_(value, context) {
     if (inferred) return inferred;
   }
 
+  const raw = String(value || '').trim().toLowerCase();
   return raw || 'tent_no_hookups';
 }
 

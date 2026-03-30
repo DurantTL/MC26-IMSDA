@@ -164,7 +164,7 @@ function repairOrAuditLodgingInternal_(dryRun) {
     const registrationId = String(row['registration_id'] || '').trim();
     const registrantName = String(row['registrant_name'] || '');
     const email          = String(row['registrant_email'] || '');
-    const currentLodging = String(row['lodging_option_key'] || row['lodging_preference'] || '').trim();
+    const currentLodging = String(row['lodging_preference'] || row['lodging_option_key'] || '').trim();
 
     const structural = evaluateStructuralValidity_(row, entryId);
     const attendeeInfo = computeAttendeeCounts_(row, structural.rosterPeople);
@@ -175,16 +175,21 @@ function repairOrAuditLodgingInternal_(dryRun) {
       attendeeCount: attendeeInfo.billedCount
     });
 
+    const pluginDeclared = extractPluginDeclaredLodgingForRepair_(row, structural.rosterPeople, attendeeInfo);
     const priceEval = evaluatePricePlausibility_(registrationTotal, attendeeInfo);
+
+    const noteFlags = getSpecialNotesPresence_(row);
 
     const context = {
       dryRun: dryRun,
       row: row,
+      noteFlags: noteFlags,
       rowNum: rowNum,
       entryId: entryId,
       registrationId: registrationId,
       currentLodging: currentLodging,
       normalizedLodging: normalizedLodging,
+      pluginDeclared: pluginDeclared,
       structural: structural,
       attendeeInfo: attendeeInfo,
       priceEval: priceEval,
@@ -194,6 +199,7 @@ function repairOrAuditLodgingInternal_(dryRun) {
     };
 
     const decision = classifyLodgingRepairDecision_(context);
+    if (dryRun) decision.writeOccurred = false;
 
     if (!dryRun && decision.writeOccurred && decision.correctedLodging) {
       try {
@@ -218,17 +224,12 @@ function repairOrAuditLodgingInternal_(dryRun) {
       entryId,
       registrantName,
       email,
-      currentLodging,
+      pluginDeclared,
+      priceEval,
       normalizedLodging,
       registrationTotal,
-      attendeeInfo.totalCount,
-      priceEval.perPersonAmount,
-      priceEval.priceGuess,
-      decision.status,
-      decision.reasonDetails,
-      decision.writeOccurred,
-      decision.debug,
-      decision.decisionBranch
+      attendeeInfo.attendeeCountFromRow,
+      decision
     ));
   }
 
@@ -300,6 +301,66 @@ function parseRosterPeople_(row, entryId) {
   }
 }
 
+function parseJsonObjectSafe_(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function normalizeDeclaredLodgingKey_(value) {
+  if (typeof canonicalizePluginLodgingKey_ === 'function') {
+    return canonicalizePluginLodgingKey_(value);
+  }
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  const valid = (CONFIG.lodging && CONFIG.lodging.validation && CONFIG.lodging.validation.validPreferences) || [];
+  if (valid.indexOf(raw) >= 0) return raw;
+  if (raw === 'cabin_with_bath' || raw === 'shared cabin - connected restroom, linens provided') return 'shared_cabin_connected';
+  if (raw === 'cabin_without_bath' || raw === 'shared cabin - detached restroom/shower, bring your own linens') return 'shared_cabin_detached';
+  if (raw === 'rv') return 'rv_hookups';
+  if (raw === 'tent') return 'tent_no_hookups';
+  if (raw === 'sabbath_only' || raw === 'sabbath attendance only') return 'sabbath_attendance_only';
+  return '';
+}
+
+function extractPluginDeclaredLodgingForRepair_(row, rosterPeople, attendeeInfo) {
+  const payload = parseJsonObjectSafe_(row['payload_json']);
+  const payloadType = normalizeDeclaredLodgingKey_(payload && payload.lodgingRequest && payload.lodgingRequest.type);
+  if (payloadType) {
+    return { lodging: payloadType, source: 'payload.lodgingRequest.type', consistent: true };
+  }
+
+  const lodgingReq = parseJsonObjectSafe_(row['lodging_request_json']);
+  const requestJsonType = normalizeDeclaredLodgingKey_(lodgingReq && lodgingReq.type);
+  if (requestJsonType) {
+    return { lodging: requestJsonType, source: 'lodging_request_json.type', consistent: true };
+  }
+
+  const topLevel = normalizeDeclaredLodgingKey_(row['lodging_option_key']);
+  if (topLevel) {
+    return { lodging: topLevel, source: 'lodging_option_key', consistent: true };
+  }
+
+  const people = Array.isArray(rosterPeople) ? rosterPeople : [];
+  const attendeeKeys = people.map(function(person) {
+    return normalizeDeclaredLodgingKey_(person.lodging_option_key || person.lodgingOptionKey);
+  }).filter(Boolean);
+  const unique = attendeeKeys.filter(function(key, idx, arr) { return arr.indexOf(key) === idx; });
+  if (unique.length === 1) {
+    return { lodging: unique[0], source: 'people[].lodging_option_key', consistent: true };
+  }
+  if (unique.length > 1) {
+    return { lodging: '', source: 'people[].lodging_option_key', consistent: false };
+  }
+
+  return { lodging: '', source: '', consistent: false };
+}
+
 /**
  * Structural validity only: parseability + minimum required identifiers.
  */
@@ -337,9 +398,14 @@ function computeAttendeeCounts_(row, rosterPeople) {
   const nonVolunteerCount = Math.max(totalCount - volunteerCount, 0);
   const billedCount = nonVolunteerCount > 0 ? nonVolunteerCount : (totalCount > 0 ? totalCount : 1);
 
+  const regTotal = safeNumber_(row['registration_total']);
   const estimatedTotal = safeNumber_(row['estimated_total']);
   const frontendTotal = safeNumber_(row['frontend_total']);
-  const registrationTotal = estimatedTotal !== null ? estimatedTotal : (frontendTotal !== null ? frontendTotal : 0);
+  const registrationTotal = regTotal !== null
+    ? regTotal
+    : (estimatedTotal !== null ? estimatedTotal : (frontendTotal !== null ? frontendTotal : 0));
+
+  const explicitAttendeeCount = safeNumber_(row['attendee_count']);
 
   return {
     totalCount: totalCount,
@@ -347,6 +413,7 @@ function computeAttendeeCounts_(row, rosterPeople) {
     minorCount: minorCount,
     billedCount: billedCount,
     registrationTotal: registrationTotal,
+    attendeeCountFromRow: explicitAttendeeCount !== null ? explicitAttendeeCount : totalCount,
     hasGroupComplexity: totalCount > 1
   };
 }
@@ -403,181 +470,140 @@ function normalizeLodgingKeyForAudit_(lodgingValue, context) {
 /**
  * Return whether row has signals that make auto-repair unsafe.
  */
-function hasAmbiguityOrDiscountSignals_(row, attendeeInfo, priceEval) {
+function getSpecialNotesPresence_(row) {
   const reasons = [];
-
-  if (attendeeInfo.volunteerCount > 0) reasons.push('volunteer attendees present');
-  if (attendeeInfo.minorCount > 0) reasons.push('minor pricing may apply');
-  if (attendeeInfo.hasGroupComplexity) reasons.push('group/roommate complexity present');
-  if (!priceEval.hasSignal) reasons.push('no positive price signal');
-  if (priceEval.candidateKeys.length !== 1) reasons.push('price mapping is ambiguous');
-
-  const paymentStatus = String(row['payment_status'] || '').toLowerCase();
-  if (paymentStatus && paymentStatus !== 'paid') reasons.push('payment status is ' + paymentStatus);
-
-  const adjustmentKeys = [
-    'discount_amount', 'manual_adjustment', 'total_adjustment',
-    'processing_fee', 'square_total', 'amount_paid'
-  ];
-  adjustmentKeys.forEach(function(key) {
-    const n = safeNumber_(row[key]);
-    if (n !== null && key.indexOf('fee') === -1 && Math.abs(n) > 0 && key !== 'square_total' && key !== 'amount_paid') {
-      reasons.push('custom adjustment in ' + key);
-    }
+  ['notes', 'special_notes', 'payment_notes', 'admin_notes'].forEach(function(key) {
+    const text = String(row[key] || '').trim();
+    if (text) reasons.push('note present in ' + key);
   });
-
-  const textKeys = ['notes', 'special_notes', 'payment_notes', 'admin_notes'];
-  textKeys.forEach(function(key) {
-    const t = String(row[key] || '').trim();
-    if (t) reasons.push('note present in ' + key);
-  });
-
   return reasons;
 }
 
-function computeDecisionFlags_(ctx, recognized) {
-  const exemptReasons = [];
-  if (ctx.isTest) exemptReasons.push('test entry override');
-  if (ctx.isDuplicate) exemptReasons.push('duplicate entry override');
-  if (ctx.specialNote) exemptReasons.push('special note override');
+function hasRoommateComplexity_(row) {
+  const fields = [
+    'roommate_request', 'roommate_request_text', 'roommate_match_status',
+    'matched_registration_id', 'matched_registrant_name', 'special_name2'
+  ];
+  return fields.some(function(key) {
+    return String(row[key] || '').trim() !== '';
+  });
+}
 
-  const ambiguityFlags = hasAmbiguityOrDiscountSignals_(ctx.row, ctx.attendeeInfo, ctx.priceEval);
-  const specialCaseFlags = [];
-  if (ctx.attendeeInfo.volunteerCount > 0) specialCaseFlags.push('volunteer');
-  if (ctx.attendeeInfo.minorCount > 0) specialCaseFlags.push('minor');
-  if (ctx.attendeeInfo.registrationTotal <= 0) specialCaseFlags.push('zero_total');
-  if (ctx.attendeeInfo.hasGroupComplexity) specialCaseFlags.push('group');
+function buildComplexityFlags_(ctx) {
+  const flags = [];
+  if (ctx.attendeeInfo.volunteerCount > 0) flags.push('volunteer');
+  if (ctx.attendeeInfo.minorCount > 0) flags.push('minor');
+  if (ctx.attendeeInfo.hasGroupComplexity) flags.push('group');
+  if (hasRoommateComplexity_(ctx.row)) flags.push('roommate');
+  if (ctx.noteFlags.length > 0) flags.push('special_notes');
+  if (ctx.specialNote) flags.push('special_case_id');
+  return flags;
+}
 
+function computeDecisionFlags_(ctx) {
   return {
-    recognizedDeclaredLodging: recognized,
     structuralValidityResult: !!ctx.structural.structurallyValid,
     pricePlausibilityResult: ctx.priceEval.plausibility || 'unknown',
-    ambiguityFlags: ambiguityFlags,
-    specialCaseFlags: specialCaseFlags,
-    explicitExempt: exemptReasons.length > 0,
-    exemptReasons: exemptReasons
+    complexityFlags: buildComplexityFlags_(ctx),
+    isSimpleRow: !ctx.isTest && !ctx.isDuplicate && buildComplexityFlags_(ctx).length === 0
   };
 }
 
-/**
- * Central classification decision.
- */
 function classifyLodgingRepairDecision_(ctx) {
-  // Why prior versions were too permissive:
-  // 1) Any recognized key + one matching price guess went straight to OK.
-  // 2) "Unsafe" signals (volunteer/minor/notes/group ambiguity) were only
-  //    used to block AUTO_FIXABLE, not to block OK.
-  // 3) Structural validity was collected but not required for OK.
-  // This rewrite makes OK an explicit high-confidence path only.
-  const recognized = !!(ctx.normalizedLodging && CONFIG.registrationOptions[ctx.normalizedLodging]);
-  const flags = computeDecisionFlags_(ctx, recognized);
-  const priceGuess = ctx.priceEval.unambiguousGuess;
-  const priceHasConflict = !!(recognized && priceGuess && priceGuess !== ctx.normalizedLodging);
-  const unsafeSignals = flags.ambiguityFlags;
+  const flags = computeDecisionFlags_(ctx);
+  const pluginLodging = ctx.pluginDeclared.lodging || '';
+  const pluginExists = !!pluginLodging;
+  const pluginConsistent = !!ctx.pluginDeclared.consistent;
+  const priceLodging = ctx.priceEval.unambiguousGuess || '';
+  const priceHasSignal = ctx.priceEval.hasSignal && !!priceLodging;
+  const currentStored = ctx.normalizedLodging || '';
 
   const reasonParts = [];
   if (!flags.structuralValidityResult) reasonParts.push('structural validity failed');
   if (!ctx.structural.hasIdentifier) reasonParts.push('missing registration/entry identifier');
   if (!ctx.structural.rosterPresent) reasonParts.push('roster missing or empty');
   if (ctx.specialNote) reasonParts.push(ctx.specialNote);
+  if (ctx.noteFlags.length) reasonParts.push(ctx.noteFlags.join('|'));
 
   if (ctx.isTest) {
-    return {
-      status: 'TEST',
-      correctedLodging: '',
-      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['explicit test entry override'])),
-      writeOccurred: false,
-      decisionBranch: 'TEST_OVERRIDE',
-      debug: flags
-    };
+    return buildDecisionResult_('TEST', '', 'TEST_OVERRIDE', reasonParts, ['explicit test entry override'], false, 'blocked_special_case', flags, pluginLodging, priceLodging, currentStored);
   }
-
   if (ctx.isDuplicate) {
-    return {
-      status: 'DUPLICATE',
-      correctedLodging: '',
-      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['explicit duplicate entry override'])),
-      writeOccurred: false,
-      decisionBranch: 'DUPLICATE_OVERRIDE',
-      debug: flags
-    };
+    return buildDecisionResult_('DUPLICATE', '', 'DUPLICATE_OVERRIDE', reasonParts, ['explicit duplicate entry override'], false, 'blocked_special_case', flags, pluginLodging, priceLodging, currentStored);
   }
 
-  if (priceHasConflict) {
-    const status = ctx.priceEval.hasSignal ? 'PRICE_INCONSISTENT' : 'NEEDS_MANUAL_REVIEW';
-    return {
-      status: status,
-      correctedLodging: priceGuess,
-      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, [
-        'declared lodging conflicts with price heuristic',
-        'declared=' + ctx.normalizedLodging,
-        'price_guess=' + priceGuess
-      ])),
-      writeOccurred: false,
-      decisionBranch: 'PRICE_CONFLICT_WITH_DECLARED',
-      debug: flags
-    };
+  if (!pluginConsistent && ctx.pluginDeclared.source === 'people[].lodging_option_key') {
+    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'PLUGIN_ATTENDEE_INCONSISTENT', reasonParts, ['attendee lodging_option_key values conflict'], false, 'inconsistent_attendee_plugin_keys', flags, pluginLodging, priceLodging, currentStored);
   }
 
-  const currentUntrustworthy = !recognized || !ctx.currentLodging;
-  const noAmbiguityOrSpecialCase = unsafeSignals.length === 0 && flags.specialCaseFlags.length === 0;
-  const strictAutofixEligible = flags.structuralValidityResult &&
-    currentUntrustworthy &&
-    ctx.priceEval.plausibility === 'affirmative' &&
-    noAmbiguityOrSpecialCase;
+  if (flags.isSimpleRow) {
+    if (pluginExists && priceHasSignal && pluginLodging === priceLodging) {
+      if (currentStored !== pluginLodging) {
+        return buildDecisionResult_('AUTO_FIXABLE', pluginLodging, 'SIMPLE_FIX_PLUGIN_AND_PRICE_AGREE', reasonParts, ['plugin + price agree; stored lodging differs'], true, '', flags, pluginLodging, priceLodging, currentStored);
+      }
+      return buildDecisionResult_('OK', '', 'SIMPLE_OK_PLUGIN_AND_PRICE_AGREE', reasonParts, ['plugin + price agree; stored lodging already aligned'], false, '', flags, pluginLodging, priceLodging, currentStored);
+    }
 
-  if (strictAutofixEligible) {
-    return {
-      status: 'AUTO_FIXABLE',
-      correctedLodging: priceGuess,
-      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['single clear price-based match'])),
-      writeOccurred: !ctx.dryRun,
-      decisionBranch: 'AUTO_FIXABLE_STRICT_SINGLE_MATCH',
-      debug: flags
-    };
+    if (pluginExists && priceHasSignal && pluginLodging !== priceLodging) {
+      return buildDecisionResult_('PRICE_INCONSISTENT', '', 'SIMPLE_PLUGIN_PRICE_CONFLICT', reasonParts, ['plugin-declared lodging conflicts with price-derived lodging'], false, 'plugin_vs_price_conflict', flags, pluginLodging, priceLodging, currentStored);
+    }
+
+    if (pluginExists && !priceHasSignal) {
+      if (currentStored !== pluginLodging) {
+        return buildDecisionResult_('AUTO_FIXABLE', pluginLodging, 'SIMPLE_FIX_PLUGIN_ONLY', reasonParts, ['plugin-declared lodging present; price signal unavailable'], true, '', flags, pluginLodging, priceLodging, currentStored);
+      }
+      return buildDecisionResult_('OK', '', 'SIMPLE_OK_PLUGIN_ONLY', reasonParts, ['plugin-declared lodging present; price signal unavailable'], false, '', flags, pluginLodging, priceLodging, currentStored);
+    }
+
+    if (!pluginExists && priceHasSignal) {
+      if (currentStored !== priceLodging) {
+        return buildDecisionResult_('AUTO_FIXABLE', priceLodging, 'SIMPLE_FIX_PRICE_FALLBACK', reasonParts, ['plugin lodging missing; using price fallback'], true, '', flags, pluginLodging, priceLodging, currentStored);
+      }
+      return buildDecisionResult_('OK', '', 'SIMPLE_OK_PRICE_FALLBACK', reasonParts, ['plugin lodging missing; price fallback matches stored'], false, '', flags, pluginLodging, priceLodging, currentStored);
+    }
+
+    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'SIMPLE_LOW_CONFIDENCE', reasonParts, ['insufficient reliable lodging signal'], false, 'no_plugin_and_no_unambiguous_price', flags, pluginLodging, priceLodging, currentStored);
   }
 
-  const okByExplicitExemption = flags.explicitExempt && flags.structuralValidityResult;
-  const okByStrictValidation = flags.structuralValidityResult &&
-    recognized &&
-    ctx.priceEval.plausibility === 'affirmative' &&
-    ctx.priceEval.unambiguousGuess === ctx.normalizedLodging &&
-    noAmbiguityOrSpecialCase;
-
-  if (okByStrictValidation || okByExplicitExemption) {
-    return {
-      status: 'OK',
-      correctedLodging: '',
-      reasonDetails: buildReasonString_(appendReasonParts_(
-        reasonParts,
-        okByExplicitExemption
-          ? ['explicit documented exemption from strict price validation', 'exemption=' + flags.exemptReasons.join('|')]
-          : ['declared lodging aligns with strict price validation']
-      )),
-      writeOccurred: false,
-      decisionBranch: okByExplicitExemption ? 'OK_BY_EXEMPTION' : 'OK_STRICT_VALIDATION',
-      debug: flags
-    };
+  if (ctx.entryId === '3490' && pluginExists) {
+    if (currentStored !== pluginLodging) {
+      return buildDecisionResult_('AUTO_FIXABLE', pluginLodging, 'EXEMPT_3490_PLUGIN_PRIMARY', reasonParts, ['documented exemption 3490; plugin lodging treated as authoritative'], true, '', flags, pluginLodging, priceLodging, currentStored);
+    }
+    return buildDecisionResult_('OK', '', 'EXEMPT_3490_ALREADY_ALIGNED', reasonParts, ['documented exemption 3490; stored already aligned'], false, '', flags, pluginLodging, priceLodging, currentStored);
   }
 
-  if (ctx.priceEval.hasSignal && ctx.priceEval.candidateKeys.length === 0) {
-    return {
-      status: 'PRICE_INCONSISTENT',
-      correctedLodging: '',
-      reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, ['price does not map to any configured lodging option'])),
-      writeOccurred: false,
-      decisionBranch: 'PRICE_INCONSISTENT_NO_MATCH',
-      debug: flags
-    };
+  if (pluginExists && priceHasSignal && pluginLodging !== priceLodging) {
+    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'COMPLEX_PLUGIN_PRICE_CONFLICT', reasonParts, ['complex row: plugin vs price conflict requires review'], false, 'complex_conflict', flags, pluginLodging, priceLodging, currentStored);
   }
 
+  if (pluginExists && currentStored !== pluginLodging) {
+    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'COMPLEX_STORED_DIFFERS_FROM_PLUGIN', reasonParts, ['complex row: stored lodging differs from plugin declaration'], false, 'complex_row_non_autofix', flags, pluginLodging, priceLodging, currentStored);
+  }
+
+  if (!pluginExists && priceHasSignal && currentStored !== priceLodging) {
+    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'COMPLEX_PRICE_ONLY_DIFFERENCE', reasonParts, ['complex row: cannot auto-fix from price alone'], false, 'complex_price_only_blocked', flags, pluginLodging, priceLodging, currentStored);
+  }
+
+  return buildDecisionResult_('OK', '', 'COMPLEX_NO_CONFLICT', reasonParts, ['no lodging conflict detected for complex row'], false, '', flags, pluginLodging, priceLodging, currentStored);
+}
+
+function buildDecisionResult_(status, correctedLodging, decisionBranch, reasonParts, extras, eligible, blockedBy, flags, pluginLodging, priceLodging, currentStored) {
   return {
-    status: 'NEEDS_MANUAL_REVIEW',
-    correctedLodging: priceGuess,
-    reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, unsafeSignals.length ? unsafeSignals : ['insufficient confidence for auto repair'])),
-    writeOccurred: false,
-    decisionBranch: 'DEFAULT_STRICT_MANUAL_REVIEW',
-    debug: flags
+    status: status,
+    correctedLodging: correctedLodging,
+    reasonDetails: buildReasonString_(appendReasonParts_(reasonParts, extras)),
+    writeOccurred: eligible,
+    decisionBranch: decisionBranch,
+    conflictType: blockedBy || '',
+    authoritativeLodgingDecision: correctedLodging || pluginLodging || priceLodging || currentStored || '',
+    repairEligible: eligible,
+    repairBlockedBy: blockedBy || '',
+    debug: {
+      structuralValidityResult: flags.structuralValidityResult,
+      pricePlausibilityResult: flags.pricePlausibilityResult,
+      complexityFlags: flags.complexityFlags,
+      isSimpleRow: flags.isSimpleRow
+    }
   };
 }
 
@@ -722,18 +748,23 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
     'entry_id',
     'registrant_name',
     'email',
-    'current_lodging_key',
-    'normalized_lodging_key',
+    'pluginDeclaredLodging',
+    'pluginDeclaredSource',
+    'pluginDeclaredConsistent',
+    'priceDerivedLodging',
+    'currentStoredLodging',
+    'authoritativeLodgingDecision',
+    'conflictType',
+    'repairEligible',
+    'repairBlockedBy',
     'registration_total',
     'attendee_count',
     'per_person_amount',
-    'price_based_lodging_guess',
-    'declared_lodging_recognized',
+    'decision_branch',
     'structural_validity_result',
     'price_plausibility_result',
-    'ambiguity_flags',
-    'special_case_flags',
-    'decision_branch',
+    'complexity_flags',
+    'is_simple_row',
     'final_status',
     'reason_details',
     'write_occurred'
@@ -754,31 +785,34 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
  */
 function buildLogRow_(
   entryId, registrantName, email,
-  currentLodging, normalizedLodging,
-  registrationTotal, attendeeCount, perPersonAmount,
-  priceGuess, finalStatus, reasonDetails, writeOccurred,
-  debugInfo, decisionBranch
+  pluginDeclared, priceEval, currentStoredLodging,
+  registrationTotal, attendeeCount, decision
 ) {
-  const debug = debugInfo || {};
+  const debug = decision.debug || {};
   return [
     entryId,
     registrantName,
     email,
-    currentLodging,
-    normalizedLodging,
+    pluginDeclared.lodging || '',
+    pluginDeclared.source || '',
+    pluginDeclared.consistent ? 'TRUE' : 'FALSE',
+    priceEval.unambiguousGuess || '',
+    currentStoredLodging || '',
+    decision.authoritativeLodgingDecision || '',
+    decision.conflictType || '',
+    decision.repairEligible ? 'TRUE' : 'FALSE',
+    decision.repairBlockedBy || '',
     registrationTotal,
     attendeeCount,
-    perPersonAmount,
-    priceGuess,
-    debug.recognizedDeclaredLodging ? 'TRUE' : 'FALSE',
+    priceEval.perPersonAmount,
+    decision.decisionBranch || '',
     debug.structuralValidityResult ? 'TRUE' : 'FALSE',
     String(debug.pricePlausibilityResult || ''),
-    (debug.ambiguityFlags || []).join('|'),
-    (debug.specialCaseFlags || []).join('|'),
-    decisionBranch || '',
-    finalStatus,
-    reasonDetails,
-    writeOccurred ? 'YES' : 'NO'
+    (debug.complexityFlags || []).join('|'),
+    debug.isSimpleRow ? 'TRUE' : 'FALSE',
+    decision.status,
+    decision.reasonDetails,
+    decision.writeOccurred ? 'YES' : 'NO'
   ];
 }
 
@@ -790,7 +824,7 @@ function writeRepairLogRows_(sheet, logRows) {
 
   const startRow  = 2;
   const numCols   = logRows[0].length;
-  const statusIdx = 15; // 0-based index of final_status
+  const statusIdx = 20; // 0-based index of final_status
 
   sheet.getRange(startRow, 1, logRows.length, numCols).setValues(logRows);
 

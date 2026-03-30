@@ -136,10 +136,42 @@ function calculateRemainingShirtInventory_(ss, excludeRegistrationId) {
 
   const rows = rosterSheet.getRange(2, 1, rosterSheet.getLastRow() - 1, rosterSheet.getLastColumn()).getValues();
   const colMap = getColumnMap_(rosterSheet);
+  const latestByRegistrationId = {};
+  rows.forEach(function(row, rowIndex) {
+    const registrationId = String(row[colMap['registration_id']] || '').trim();
+    if (!registrationId) return;
+    latestByRegistrationId[registrationId] = rowIndex;
+  });
 
-  rows.forEach(row => {
-    const registrationId = String(row[colMap['registration_id']] || '');
+  const registrationsSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+  const registrationsPaymentById = {};
+  if (registrationsSheet && registrationsSheet.getLastRow() > 1) {
+    const registrationsRows = registrationsSheet.getRange(2, 1, registrationsSheet.getLastRow() - 1, registrationsSheet.getLastColumn()).getValues();
+    const registrationsColMap = getColumnMap_(registrationsSheet);
+    registrationsRows.forEach(function(row) {
+      const registrationId = String(row[registrationsColMap['registration_id']] || '').trim();
+      if (!registrationId) return;
+      registrationsPaymentById[registrationId] = String(row[registrationsColMap['payment_status']] || '').trim().toLowerCase();
+    });
+  }
+
+  const hasRosterPaymentStatusCol = Object.prototype.hasOwnProperty.call(colMap, 'payment_status');
+  const skipPaymentStatuses = ['refunded', 'cancelled', 'voided'];
+
+  rows.forEach(function(row, rowIndex) {
+    const registrationId = String(row[colMap['registration_id']] || '').trim();
+    if (!registrationId) return;
+    if (latestByRegistrationId[registrationId] !== rowIndex) return;
     if (excludeRegistrationId && registrationId === excludeRegistrationId) return;
+
+    let paymentStatus = '';
+    if (hasRosterPaymentStatusCol) {
+      paymentStatus = String(row[colMap['payment_status']] || '').trim().toLowerCase();
+    }
+    if (!paymentStatus && Object.prototype.hasOwnProperty.call(registrationsPaymentById, registrationId)) {
+      paymentStatus = registrationsPaymentById[registrationId];
+    }
+    if (skipPaymentStatuses.includes(paymentStatus)) return;
 
     const shirtSize = String(row[colMap['shirt_size']] || '').trim().toUpperCase();
     if (!shirtSize || !remaining[shirtSize]) return;
@@ -251,4 +283,57 @@ function refreshShirtInventorySheet_(ss) {
       last_recalculated_at: new Date()
     });
   });
+}
+
+
+/**
+ * Applies one-off hardcoded lodging overrides and refreshes lodging inventory once.
+ */
+function runManualLodgingOverrides_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const overrides = [
+    { registrationId: 'REG-XXXX', rowNum: 0, lodging: 'lodging_key' }
+  ];
+
+  const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+  const rosterSheet = ss.getSheetByName(CONFIG.sheets.roster);
+  const campingSheet = ss.getSheetByName(CONFIG.sheets.campingGroups);
+  const assignmentsSheet = ss.getSheetByName(CONFIG.sheets.assignments);
+  const lodgingAssSheet = ss.getSheetByName(CONFIG.sheets.lodgingAssignments);
+
+  let appliedCount = 0;
+  let failedCount = 0;
+
+  overrides.forEach(function(override) {
+    try {
+      Logger.log('runManualLodgingOverrides_: applying override for ' + override.registrationId + ' (row ' + override.rowNum + ' => ' + override.lodging + ')');
+      repairSingleRegistration_(
+        ss,
+        regSheet,
+        rosterSheet,
+        campingSheet,
+        assignmentsSheet,
+        lodgingAssSheet,
+        Number(override.rowNum) || -1,
+        override.registrationId,
+        override.lodging
+      );
+      appliedCount++;
+    } catch (err) {
+      failedCount++;
+      Logger.log('runManualLodgingOverrides_: failed override for ' + override.registrationId + ' (non-fatal): ' + err.toString());
+    }
+  });
+
+  try {
+    refreshLodgingInventorySheet_(ss);
+    Logger.log('runManualLodgingOverrides_: Lodging inventory refreshed after manual overrides.');
+  } catch (refreshErr) {
+    failedCount++;
+    Logger.log('runManualLodgingOverrides_: Failed to refresh lodging inventory (non-fatal): ' + refreshErr.toString());
+  }
+
+  SpreadsheetApp.getUi().alert(
+    'Manual lodging overrides complete. Applied: ' + appliedCount + ', Failed: ' + failedCount
+  );
 }

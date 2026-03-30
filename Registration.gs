@@ -518,6 +518,21 @@ function writeRoommateAssignmentsRow_(ss, data) {
           rowObj.created_at = existingRow['created_at'] || now;
           rowObj.override_by_admin = existingRow['override_by_admin'] !== undefined ? existingRow['override_by_admin'] : false;
           updateRowFromObject_(sheet, rowIndex + 2, rowObj);
+
+          if (rowObj.match_status !== 'none') {
+            try {
+              enqueueBackgroundJob_({
+                type: 'roommateUpdate',
+                registrationId: rowObj.registration_id,
+                registrantEmail: rowObj.registrant_email,
+                matchStatus: rowObj.match_status,
+                matchedRegistrationId: rowObj.matched_registration_id
+              });
+              Logger.log('writeRoommateAssignmentsRow_: queued roommateUpdate job for ' + rowObj.registration_id);
+            } catch (queueErr) {
+              Logger.log('writeRoommateAssignmentsRow_: failed to queue roommateUpdate job (non-fatal): ' + queueErr.toString());
+            }
+          }
           return;
         }
       }
@@ -660,7 +675,7 @@ function normalizeRoommateRequest_(raw) {
   return {
     requestText:           String(raw.requestText || '').trim(),
     matchedRegistrationId: String(raw.matchedRegistrationId || '').trim(),
-    matchStatus:           ['none', 'requested', 'matched'].includes(status) ? status : 'none'
+    matchStatus:           ['none', 'requested', 'matched', 'partial', 'override'].includes(status) ? status : 'none'
   };
 }
 

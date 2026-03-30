@@ -77,17 +77,19 @@
   }
 
   function optionByKey(key) {
-    return LODGING_OPTIONS.find((option) => option.key === key) || LODGING_OPTIONS[0];
+    const canonicalKey = canonicalLodgingKey(key);
+    if (!canonicalKey) return null;
+    return LODGING_OPTIONS.find((option) => option.key === canonicalKey) || null;
   }
 
   function canonicalLodgingKey(rawValue) {
     const raw = String(rawValue || '').trim().toLowerCase();
-    if (!raw) return LODGING_OPTIONS[0].key;
+    if (!raw) return '';
     if (raw === 'cabin_connected' || raw === 'shared_cabin_connected') return 'shared_cabin_connected';
     if (raw === 'cabin_detached' || raw === 'shared_cabin_detached') return 'shared_cabin_detached';
     if (raw === 'sabbath_only' || raw === 'sabbath_attendance_only') return 'sabbath_attendance_only';
     if (LODGING_OPTIONS.some((option) => option.key === raw)) return raw;
-    return LODGING_OPTIONS[0].key;
+    return '';
   }
 
   function parseAge(value) {
@@ -470,6 +472,7 @@
 
     function calculateTotals(people, paymentMethod) {
       const lodging = optionByKey(state.lodging.type);
+      const overnightPrice = lodging ? lodging.price : 0;
       let overnightCount = 0;
       let sabbathOnlyCount = 0;
       let baseTotal = 0;
@@ -482,7 +485,7 @@
           return;
         }
         overnightCount += 1;
-        baseTotal += lodging.price;
+        baseTotal += overnightPrice;
       });
 
       const roundedBase = roundCurrency(baseTotal);
@@ -501,7 +504,7 @@
         customPaymentAmount,
         overnightCount,
         sabbathOnlyCount,
-        overnightPrice: lodging.price
+        overnightPrice
       };
     }
 
@@ -523,6 +526,7 @@
       const people = serializePeople();
       const totals = calculateTotals(people, state.paymentMethod);
       const lodging = optionByKey(state.lodging.type);
+      const hasSelectedLodging = !!lodging;
       const payloadPeople = people.map((person) => ({
         first_name: person.first_name,
         last_name: person.last_name,
@@ -535,17 +539,17 @@
         is_guardian: person.is_guardian,
         guardian_link_key: person.guardian_link_key,
         is_primary: person.is_primary,
-        lodging_option_key: optionByKey(state.lodging.type).key,
+        lodging_option_key: hasSelectedLodging ? lodging.key : '',
       }));
       const peopleJson = JSON.stringify(payloadPeople);
-      const lodgingJson = JSON.stringify(lodgingRequest());
+      const lodgingJson = hasSelectedLodging ? JSON.stringify(lodgingRequest()) : '';
 
       setFieldValue(form, CONTRACT.peopleField, peopleJson);
       setFieldValue(form, 'attendees_json', peopleJson);
       setFieldValue(form, CONTRACT.rosterField, peopleJson);
       setFieldValue(form, CONTRACT.attendeeCountField, String(payloadPeople.length));
-      setFieldValue(form, CONTRACT.lodgingOptionKeyField, lodging.key);
-      setFieldValue(form, CONTRACT.lodgingOptionLabelField, lodging.label);
+      setFieldValue(form, CONTRACT.lodgingOptionKeyField, hasSelectedLodging ? lodging.key : '');
+      setFieldValue(form, CONTRACT.lodgingOptionLabelField, hasSelectedLodging ? lodging.label : '');
       setFieldValue(form, CONTRACT.lodgingRequestField, lodgingJson);
       setFieldValue(form, CONTRACT.rvAmpField, state.lodging.type === 'rv_hookups' ? (state.lodging.rvAmp || '') : '');
       setFieldValue(form, CONTRACT.rvLengthField, state.lodging.type === 'rv_hookups' ? (state.lodging.rvLengthFeet || '') : '');
@@ -605,7 +609,7 @@
       setFieldValue(form, 'age_group', primaryAgeGroup);
       setFieldValue(form, 'is_minor', primaryAgeGroup === 'child' ? 'yes' : 'no');
 
-      return { people, totals, lodging };
+      return { people, totals, lodging, hasSelectedLodging };
     }
 
     function getLodgingAvailabilityInfo(optionKey) {
@@ -662,7 +666,7 @@
       // Compute availability warning for the currently selected lodging option.
       const selectedLodgingAvail = state.lodgingAvailability && state.lodgingAvailability[state.lodging.type];
       let availabilityWarning = '';
-      if (selectedLodgingAvail) {
+      if (selectedLodgingAvail && lodgingOption) {
         if (selectedLodgingAvail.soldOut && !selectedLodgingAvail.waitlistAllowed) {
           availabilityWarning = `${lodgingOption.label} is sold out. Please select a different option.`;
         } else if (selectedLodgingAvail.soldOut && selectedLodgingAvail.waitlistAllowed) {
@@ -937,7 +941,7 @@
               </div>
               <div class="muted" style="margin-top:6px;">Processing fee: $${formatMoney(totals.processingFee)} (${state.paymentMethod === 'offline' ? 'offline payment' : 'Square'})</div>
               <div style="margin-top:10px; font-size: 20px; font-weight: 700;">Total due: $${formatMoney(totals.customPaymentAmount)}</div>
-              <div class="muted" style="margin-top:6px;">Lodging option: ${escapeHtml(lodgingOption.label)}</div>
+              <div class="muted" style="margin-top:6px;">Lodging option: ${escapeHtml(lodgingOption ? lodgingOption.label : 'Not selected')}</div>
               ${availabilityWarning ? `<div class="mc-inline-warning" style="margin-top:8px;color:#ffd8a8;">${escapeHtml(availabilityWarning)}</div>` : ''}
             </div>
           </div>
@@ -1171,18 +1175,26 @@
       const primaryValid = validatePrimary();
       const people = serializePeople();
       const invalidGuardian = people.some((person) => person.age_group === 'child' && !person.guardian_link_key);
+      const hasOvernightAttendee = people.some((person) => person.attendance_type !== 'sabbath_only');
+      const selectedLodging = optionByKey(state.lodging.type);
+      const hasLodgingSelection = !!selectedLodging;
 
       if (invalidGuardian) {
         state.rosterError = 'Each child attendee must have a guardian before submitting.';
       }
+      if (hasOvernightAttendee && !hasLodgingSelection) {
+        state.rosterError = 'Please select a lodging option for overnight attendees before submitting.';
+      }
 
-      if (!primaryValid || invalidGuardian) {
+      if (!primaryValid || invalidGuardian || (hasOvernightAttendee && !hasLodgingSelection)) {
         // Stop here — Fluent Forms' click handler (and reCaptcha invocation) never run.
         event.preventDefault();
         event.stopImmediatePropagation();
         render();
         return;
       }
+
+      window.console.info('[ManCamp][DEBUG] selected lodging before submit:', state.lodging.type || '(blank)');
 
       // Validation passed: do the final sync silently, then let the click
       // propagate so Fluent Forms handles reCaptcha and submission normally.
@@ -1192,6 +1204,13 @@
       } finally {
         _isSyncing = false;
       }
+      window.console.info(
+        '[ManCamp][DEBUG] hidden lodging fields before submit:',
+        {
+          lodging_option_key: readFieldValue(form, CONTRACT.lodgingOptionKeyField),
+          lodging_request_json: readFieldValue(form, CONTRACT.lodgingRequestField)
+        }
+      );
       showPaymentOverlay();
       startOverlayMessageCycle();
     }

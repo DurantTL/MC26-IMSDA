@@ -499,6 +499,10 @@ function mancamp_build_payload( $submission, $payment = [] ) {
 
     $primary = $people[0];
     $lodging_request = mancamp_extract_lodging_request( $form_data, $primary );
+    $lodging_required = mancamp_lodging_required_for_people( $people );
+    if ( $lodging_required && ( $lodging_request['type'] ?? '' ) === '' ) {
+        return new WP_Error( 'missing_lodging', 'Lodging selection is required for overnight registrations.' );
+    }
     $payment_meta = mancamp_collect_payment_meta( $form_data, $payment, $top_level );
     $attendee_count = mancamp_resolve_attendee_count( $top_level, $people );
     $submitted_at = mancamp_submission_timestamp( $submission );
@@ -522,6 +526,7 @@ function mancamp_build_payload( $submission, $payment = [] ) {
 
     if ( mancamp_debug() ) {
         error_log( '[ManCamp][DEBUG] roommate_request result: ' . json_encode( $roommate_request ) );
+        error_log( '[ManCamp][DEBUG] resolved lodging_request.type: ' . ( $lodging_request['type'] ?? '(missing)' ) );
     }
 
     return [
@@ -599,9 +604,8 @@ function mancamp_extract_people_payload( $formData ) {
 
 function mancamp_sanitise_people( $people, $formData = [] ) {
     $clean = [];
-    // Prefer lodging_request_json (always written by JS widget) as the most
-    // reliable source for the default lodging type, then fall back to the
-    // individual lodging_option_key field.
+    // Prefer lodging_request_json as the most reliable source for a default
+    // lodging type, then fall back to lodging_option_key. Blank remains blank.
     $default_option_key = '';
     $lodging_request_json_raw = $formData['lodging_request_json'] ?? '';
     if ( $lodging_request_json_raw !== '' ) {
@@ -768,6 +772,9 @@ function mancamp_normalise_age_group( $value, $age = null ) {
 
 function mancamp_normalise_lodging_preference( $value ) {
     $normalised = strtolower( sanitize_text_field( (string) $value ) );
+    if ( $normalised === '' ) {
+        return '';
+    }
     if ( $normalised === 'cabin_with_bath' ) {
         $normalised = 'shared_cabin_connected';
     } elseif ( $normalised === 'cabin_without_bath' ) {
@@ -882,6 +889,21 @@ function mancamp_extract_lodging_request( $formData, $primary ) {
         'rvLengthFeet' => $type === 'rv_hookups' && mancamp_pick_field( $formData, [ 'rv_length' ], '' ) !== '' ? (int) mancamp_pick_field( $formData, [ 'rv_length' ], '' ) : null,
         'notes'        => sanitize_textarea_field( $formData['notes'] ?? '' ),
     ];
+}
+
+function mancamp_lodging_required_for_people( $people ) {
+    if ( ! is_array( $people ) ) {
+        return false;
+    }
+
+    foreach ( $people as $person ) {
+        $attendance_type = mancamp_normalise_attendance_type( $person['attendance_type'] ?? '' );
+        if ( $attendance_type !== 'sabbath_only' ) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function mancamp_resolve_attendee_count( $top_level, $people ) {

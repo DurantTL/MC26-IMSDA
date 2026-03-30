@@ -296,10 +296,42 @@ function calculateRemainingInventory(ss, excludeRegistrationId) {
 
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
   const colMap = getColumnMap_(sheet);
+  const latestByRegistrationId = {};
+  rows.forEach(function(row, rowIndex) {
+    const registrationId = String(row[colMap['registration_id']] || '').trim();
+    if (!registrationId) return;
+    latestByRegistrationId[registrationId] = rowIndex;
+  });
 
-  rows.forEach(row => {
-    const registrationId = String(row[colMap['registration_id']] || '');
+  const registrationsSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+  const registrationsPaymentById = {};
+  if (registrationsSheet && registrationsSheet.getLastRow() > 1) {
+    const registrationsRows = registrationsSheet.getRange(2, 1, registrationsSheet.getLastRow() - 1, registrationsSheet.getLastColumn()).getValues();
+    const registrationsColMap = getColumnMap_(registrationsSheet);
+    registrationsRows.forEach(function(row) {
+      const registrationId = String(row[registrationsColMap['registration_id']] || '').trim();
+      if (!registrationId) return;
+      registrationsPaymentById[registrationId] = String(row[registrationsColMap['payment_status']] || '').trim().toLowerCase();
+    });
+  }
+
+  const hasLodgingPaymentStatusCol = Object.prototype.hasOwnProperty.call(colMap, 'payment_status');
+  const skipPaymentStatuses = ['refunded', 'cancelled', 'voided'];
+
+  rows.forEach(function(row, rowIndex) {
+    const registrationId = String(row[colMap['registration_id']] || '').trim();
+    if (!registrationId) return;
+    if (latestByRegistrationId[registrationId] !== rowIndex) return;
     if (excludeRegistrationId && registrationId === excludeRegistrationId) return;
+
+    let paymentStatus = '';
+    if (hasLodgingPaymentStatusCol) {
+      paymentStatus = String(row[colMap['payment_status']] || '').trim().toLowerCase();
+    }
+    if (!paymentStatus && Object.prototype.hasOwnProperty.call(registrationsPaymentById, registrationId)) {
+      paymentStatus = registrationsPaymentById[registrationId];
+    }
+    if (skipPaymentStatuses.includes(paymentStatus)) return;
 
     const category = String(row[colMap['inventory_category']] || '').trim();
     if (!category || !byCategory[category]) return;

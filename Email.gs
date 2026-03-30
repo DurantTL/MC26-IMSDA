@@ -33,6 +33,105 @@ function sendConfirmationEmail_(data) {
   );
 }
 
+/**
+ * Sends a roommate assignment update email to the registrant.
+ *
+ * @param {Object} data
+ */
+function sendRoommateUpdateEmail_(data) {
+  const emailData = normalizeConfirmationEmailData_(data || {});
+  const rr = emailData.roommateRequest || {};
+  const status = String(rr.matchStatus || '').trim().toLowerCase();
+  const matchedRegistrantName = String(rr.matchedRegistrantName || '').trim();
+  const matchedLabel = matchedRegistrantName || 'your requested cabinmate';
+  const replyToEmail = isValidEmailAddress_(CONFIG.email.replyTo) ? CONFIG.email.replyTo : (CONFIG.email.contactEmail || 'our team');
+
+  let message = 'Your cabin assignment has been updated. Please contact us if you have any questions.';
+  if (status === 'matched' || status === 'override') {
+    message = "Good news! Your cabin assignment has been confirmed. You'll be bunking with " + matchedLabel + ". If you have any questions about your cabin arrangement, reply to this email or contact us at " + replyToEmail + ".";
+  } else if (status === 'partial') {
+    message = "We were able to match part of your cabin request. " + matchedLabel + " has been confirmed in your group. However, one or more names you requested could not be matched at this time — we'll do our best to accommodate remaining requests based on availability. If you have questions, reply to this email.";
+  } else if (status === 'requested') {
+    message = "We've received your cabin preference request and our team will review it. You'll hear from us once your assignment is confirmed.";
+  }
+
+  const requestText = String(rr.requestText || '').trim();
+  const plainLines = [
+    'Hello ' + (emailData.registrantName || 'Registrant') + ',',
+    '',
+    message,
+    ''
+  ];
+
+  if (requestText) {
+    plainLines.push('Your original request: ' + requestText);
+    plainLines.push('');
+  }
+
+  plainLines.push('Registrant: ' + (emailData.registrantName || '—'));
+  plainLines.push('Registration ID: ' + (emailData.registrationId || '—'));
+  plainLines.push('You can reply to this email with any questions.');
+
+  const htmlBody =
+    '<!DOCTYPE html>' +
+    '<html lang="en">' +
+    '<head>' +
+      '<meta charset="UTF-8">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+      '<title>Man Camp 2026 — Cabin Assignment Update</title>' +
+    '</head>' +
+    '<body style="margin:0;padding:0;background:#f5f1e7;font-family:Arial,Helvetica,sans-serif;color:#24323a;">' +
+      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f1e7;padding:20px 0;">' +
+        '<tr><td align="center">' +
+          '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #ddd5c5;">' +
+            '<tr><td style="background:linear-gradient(135deg,#355c4f 0%,#254237 100%);padding:28px 24px;text-align:center;">' +
+              '<div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#c8ddd3;">' + escapeHtml_(CONFIG.system.organizationName) + '</div>' +
+              '<div style="margin-top:8px;font-size:28px;line-height:1.1;font-weight:700;color:#ffffff;">' + escapeHtml_(CONFIG.email.eventName) + '</div>' +
+              '<div style="margin-top:8px;font-size:13px;color:#dce9e2;">' + escapeHtml_(CONFIG.email.eventDates) + ' • ' + escapeHtml_(CONFIG.email.eventLocation) + '</div>' +
+            '</td></tr>' +
+            '<tr><td style="background:#a55a1f;padding:14px 24px;text-align:center;color:#fff;">' +
+              '<div style="font-size:15px;font-weight:700;">Cabin Assignment Update • ' + escapeHtml_(emailData.registrationId || 'Pending ID') + '</div>' +
+            '</td></tr>' +
+            '<tr><td style="padding:26px 24px;">' +
+              '<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">Hello <strong>' + escapeHtml_(emailData.registrantName || 'Registrant') + '</strong>,</p>' +
+              '<p style="margin:0 0 18px 0;font-size:15px;line-height:1.7;color:#394851;">' + escapeHtml_(message) + '</p>' +
+              (requestText
+                ? '<div style="background:#f3f7f5;border:1px solid #d8e4dd;border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:14px;line-height:1.7;color:#394851;">' +
+                    '<div style="font-size:13px;font-weight:700;color:#355c4f;margin-bottom:6px;">Your original request:</div>' +
+                    '<div><em>&ldquo;' + escapeHtml_(requestText) + '&rdquo;</em></div>' +
+                  '</div>'
+                : '') +
+              '<div style="background:#f8f4eb;border:1px solid #e6dfd2;border-radius:12px;padding:16px 18px;font-size:14px;">' +
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">' +
+                  '<tr><td style="' + tdLabelStyle_() + '">Registrant</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(emailData.registrantName || '—') + '</td></tr>' +
+                  '<tr><td style="' + tdLabelStyle_() + '">Registration ID</td><td style="' + tdValueStyle_() + 'font-family:monospace;">' + escapeHtml_(emailData.registrationId || '—') + '</td></tr>' +
+                  '<tr><td style="' + tdLabelStyle_() + '">Match Status</td><td style="' + tdValueStyle_() + '">' + escapeHtml_(status || 'updated') + '</td></tr>' +
+                '</table>' +
+              '</div>' +
+              '<p style="margin:16px 0 0 0;font-size:13px;line-height:1.7;color:#53636b;">You can reply to this email with any questions.</p>' +
+            '</td></tr>' +
+            '<tr><td style="background:#24323a;padding:18px 24px;text-align:center;color:#d3d8db;font-size:12px;">' +
+              escapeHtml_(CONFIG.system.organizationName) + '<br>' +
+              'Automated Man Camp cabin assignment update • ' + escapeHtml_(emailData.registrationId || 'Pending') +
+            '</td></tr>' +
+          '</table>' +
+        '</td></tr>' +
+      '</table>' +
+    '</body>' +
+    '</html>';
+
+  const options = { htmlBody: htmlBody };
+  options.name = CONFIG.email.fromName || CONFIG.email.eventName || 'Man Camp';
+  if (isValidEmailAddress_(CONFIG.email.replyTo)) options.replyTo = CONFIG.email.replyTo;
+
+  GmailApp.sendEmail(
+    emailData.registrantEmail,
+    'Man Camp 2026 — Cabin Assignment Update',
+    plainLines.join('\n'),
+    options
+  );
+}
+
 
 // ============================================================
 // SECTION 2 — DATA NORMALIZATION
@@ -176,7 +275,7 @@ function normalizeConfirmationEmailData_(data) {
       return {
         requestText:           String(rr.requestText || '').trim(),
         matchedRegistrationId: String(rr.matchedRegistrationId || '').trim(),
-        matchStatus:           ['none', 'requested', 'matched'].includes(status) ? status : 'none'
+        matchStatus:           ['none', 'requested', 'matched', 'partial', 'override'].includes(status) ? status : 'none'
       };
     })()
   };

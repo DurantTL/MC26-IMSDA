@@ -164,6 +164,7 @@ function processBackgroundJobs() {
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let reportNeeded = false;
+  let repairNeeded = false;
 
   for (const job of queue) {
     try {
@@ -176,6 +177,26 @@ function processBackgroundJobs() {
         refreshLodgingInventorySheet_(ss);
       } else if (job.type === 'refreshShirts') {
         refreshShirtInventorySheet_(ss);
+      } else if (job.type === 'roommateUpdate') {
+        processRoommateUpdateEmailJob_(ss, job);
+      } else if (job.type === 'manualRepair') {
+        const regSheet = ss.getSheetByName(CONFIG.sheets.registrations);
+        const rosterSheet = ss.getSheetByName(CONFIG.sheets.roster);
+        const campingSheet = ss.getSheetByName(CONFIG.sheets.campingGroups);
+        const assignmentsSheet = ss.getSheetByName(CONFIG.sheets.assignments);
+        const lodgingAssSheet = ss.getSheetByName(CONFIG.sheets.lodgingAssignments);
+        repairSingleRegistration_(
+          ss,
+          regSheet,
+          rosterSheet,
+          campingSheet,
+          assignmentsSheet,
+          lodgingAssSheet,
+          Number(job.rowNum) || -1,
+          job.registrationId,
+          job.lodging
+        );
+        repairNeeded = true;
       } else {
         Logger.log('processBackgroundJobs: Unknown job type "' + job.type + '" — skipping.');
       }
@@ -194,6 +215,15 @@ function processBackgroundJobs() {
       Logger.log('processBackgroundJobs: Report sheets rebuilt successfully.');
     } catch (err) {
       Logger.log('processBackgroundJobs: Report rebuild failed: ' + err.toString());
+    }
+  }
+
+  if (repairNeeded) {
+    try {
+      refreshLodgingInventorySheet_(ss);
+      Logger.log('processBackgroundJobs: Lodging inventory refreshed after manual repairs.');
+    } catch (err) {
+      Logger.log('processBackgroundJobs: Lodging inventory refresh failed after manual repairs: ' + err.toString());
     }
   }
 
@@ -241,6 +271,56 @@ function processEmailJob_(ss, job) {
   } catch (emailErr) {
     logEmail_(ss, job.registrationId, data.registrantEmail || job.registrantEmail, data.registrationLabel || job.clubName, 'email1_failed', emailErr.toString());
     throw emailErr;   // Re-throw so outer loop can log it
+  }
+}
+
+/**
+ * Reconstructs registration data and sends roommate-assignment update email.
+ * Logs success/failure to EmailLog and never throws.
+ *
+ * @param {Spreadsheet} ss
+ * @param {Object}      job
+ */
+function processRoommateUpdateEmailJob_(ss, job) {
+  if (!CONFIG.email.enabled) {
+    Logger.log('processRoommateUpdateEmailJob_: Email disabled in CONFIG — skipping.');
+    return;
+  }
+
+  if (!job.registrationId) {
+    Logger.log('processRoommateUpdateEmailJob_: Missing registrationId in job payload — skipping.');
+    return;
+  }
+
+  try {
+    const data = buildConfirmationEmailDataFromRegistration_(ss, job.registrationId);
+    data.roommateRequest = data.roommateRequest || {};
+    if (job.matchStatus) data.roommateRequest.matchStatus = String(job.matchStatus || '').trim().toLowerCase();
+    if (job.matchedRegistrationId) data.roommateRequest.matchedRegistrationId = String(job.matchedRegistrationId || '').trim();
+
+    const roommateSheet = ss.getSheetByName(CONFIG.sheets.roommateAssignments);
+    if (roommateSheet && roommateSheet.getLastRow() > 1) {
+      const rrRows = roommateSheet.getRange(2, 1, roommateSheet.getLastRow() - 1, roommateSheet.getLastColumn()).getValues();
+      const rrColMap = getColumnMap_(roommateSheet);
+      const rrRow = rrRows.filter(function(row) {
+        return String(row[rrColMap['registration_id']] || '').trim() === String(job.registrationId || '').trim();
+      }).pop();
+      if (rrRow) {
+        data.roommateRequest.requestText = String(rrRow[rrColMap['request_text']] || data.roommateRequest.requestText || '').trim();
+        data.roommateRequest.matchedRegistrantName = String(rrRow[rrColMap['matched_registrant_name']] || '').trim();
+      }
+    }
+
+    sendRoommateUpdateEmail_(data);
+    logEmail_(ss, job.registrationId, data.registrantEmail || job.registrantEmail || '', data.registrationLabel || job.clubName || '', 'roommate_update_sent', '');
+    Logger.log('processRoommateUpdateEmailJob_: Roommate update email sent for ' + job.registrationId);
+  } catch (err) {
+    try {
+      logEmail_(ss, job.registrationId, job.registrantEmail || '', job.clubName || '', 'roommate_update_failed', err.toString());
+    } catch (logErr) {
+      Logger.log('processRoommateUpdateEmailJob_: Failed to log email error (non-fatal): ' + logErr.toString());
+    }
+    Logger.log('processRoommateUpdateEmailJob_: Failed for ' + job.registrationId + ' (non-fatal): ' + err.toString());
   }
 }
 

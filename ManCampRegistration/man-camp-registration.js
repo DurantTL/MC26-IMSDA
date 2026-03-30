@@ -22,6 +22,7 @@
     rvLengthField: 'rv_length',
     registrationTotalField: 'registration_total',
     processingFeeField: 'processing_fee',
+    paymentMethodOutField: 'mc_payment_method_out',
     paymentMethodField: 'payment_method',
     payTypeField: 'pay_type',
     customPaymentAmountFields: ['custom_payment_amount', 'custom-payment-amount']
@@ -142,9 +143,9 @@
 
   function findPaymentMethodControl(form) {
     // Prefer visible/interactive controls (radio, select) over hidden fields.
-    // The widget writes state back to a hidden input[name="payment_method"],
-    // so if we matched that first we'd always read our own output instead of
-    // the user's actual Fluent Forms payment selection.
+    // The widget mirrors state into mc_payment_method_out, so if we matched
+    // hidden inputs first we'd read our own mirror instead of the user's
+    // actual Fluent Forms payment selection.
     return (
       form.querySelector('input[type="radio"][name="pay_type"], input[type="radio"][name="payment_method"]') ||
       form.querySelector('select[name="pay_type"], select[name="payment_method"]') ||
@@ -652,36 +653,27 @@
       setFieldValue(form, CONTRACT.rvLengthField, state.lodging.type === 'rv_hookups' ? (state.lodging.rvLengthFeet || '') : '');
       setFieldValue(form, CONTRACT.registrationTotalField, formatMoney(totals.baseTotal));
       setFieldValue(form, CONTRACT.processingFeeField, formatMoney(totals.processingFee));
-      // Write resolved payment method to a hidden output field only.
-      // We must NOT write to CONTRACT.paymentMethodField if it resolves to a
-      // radio group — doing so re-checks 'square' on every render and prevents
-      // the user from ever selecting cash/check.
-      // Instead: find the actual hidden input (not a radio) and write there.
-      // If no dedicated hidden field exists, create one so the payload always
-      // carries the resolved value.
+      // Mirror payment method to plugin-owned output only.
+      // Fluent Forms remains source-of-truth for native payment fields.
       (function writePaymentMethodOutput() {
-        const allFields = Array.from(form.querySelectorAll('[name="payment_method"]'));
-        const hiddenField = allFields.find((el) => el.type === 'hidden' || el.tagName === 'INPUT' && el.type !== 'radio');
-        if (hiddenField) {
-          if (hiddenField.value !== state.paymentMethod) {
-            hiddenField.value = state.paymentMethod;
-            if (!_isSyncing) {
-              hiddenField.dispatchEvent(new Event('input', { bubbles: true }));
-              hiddenField.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-          }
-        } else {
-          // Create a dedicated hidden output field so the payload always has it
-          let outField = form.querySelector('input[name="mc_payment_method_out"]');
-          if (!outField) {
-            outField = document.createElement('input');
-            outField.type = 'hidden';
-            outField.name = 'mc_payment_method_out';
-            form.appendChild(outField);
-          }
+        let outField = form.querySelector(`input[name="${CONTRACT.paymentMethodOutField}"]`);
+        if (!outField) {
+          outField = document.createElement('input');
+          outField.type = 'hidden';
+          outField.name = CONTRACT.paymentMethodOutField;
+          form.appendChild(outField);
+        }
+        if (outField.value !== state.paymentMethod) {
           outField.value = state.paymentMethod;
+          if (!_isSyncing) {
+            outField.dispatchEvent(new Event('input', { bubbles: true }));
+            outField.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
       }());
+      window.console.info('[ManCamp][DEBUG] detected Fluent Forms payment value:', paymentState.raw || '(blank)');
+      window.console.info('[ManCamp][DEBUG] mirrored mc_payment_method_out value:', state.paymentMethod);
+      window.console.info('[ManCamp][DEBUG] native payment fields untouched by sync (payment_method/pay_type).');
       CONTRACT.customPaymentAmountFields.forEach((name) => {
         setFieldValue(form, name, formatMoney(totals.customPaymentAmount));
       });
@@ -693,6 +685,7 @@
       noTranslateField(getField(form, CONTRACT.registrationTotalField));
       noTranslateField(getField(form, CONTRACT.processingFeeField));
       CONTRACT.customPaymentAmountFields.forEach((name) => noTranslateField(getField(form, name)));
+      noTranslateField(getField(form, CONTRACT.paymentMethodOutField));
 
       // Sync primary registrant values back to native Fluent Forms fields
       // so FF's own required-field validation passes. These calls are no-ops

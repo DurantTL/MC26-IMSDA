@@ -189,6 +189,7 @@ function mancamp_enqueue_scripts() {
             'rvLengthField' => 'rv_length',
             'registrationTotalField' => 'registration_total',
             'processingFeeField' => 'processing_fee',
+            'paymentMethodOutField' => 'mc_payment_method_out',
             'customPaymentAmountFields' => [ 'custom_payment_amount', 'custom-payment-amount' ],
         ],
     ] );
@@ -327,7 +328,7 @@ function mancamp_maybe_send_offline_on_submit( $insertId, $formData, $form ) {
     ];
 
     // An empty payment method means Square hasn't written its token back yet; this is not an offline submission.
-    $raw_pay_type = mancamp_pick_field( $formData, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], '' );
+    $raw_pay_type = mancamp_pick_payment_method_field( $formData, '' );
     if ( $raw_pay_type === '' ) {
         return;
     }
@@ -340,6 +341,10 @@ function mancamp_maybe_send_offline_on_submit( $insertId, $formData, $form ) {
         'submission' => $submission,
         'payment'    => mancamp_get_payment_record( $entry_id ),
     ], false, 'offline_submission_hook', 'Offline submission hook attempting webhook delivery.' );
+}
+
+function mancamp_pick_payment_method_field( $form_data, $default = 'square' ) {
+    return mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], $default );
 }
 
 // ============================================================
@@ -559,7 +564,7 @@ function mancamp_extract_top_level_fields( $form_data ) {
     }
 
     if ( ! isset( $top_level['payment_method'] ) ) {
-        $top_level['payment_method'] = mancamp_normalise_pay_type( mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], 'square' ) );
+        $top_level['payment_method'] = mancamp_normalise_pay_type( mancamp_pick_payment_method_field( $form_data, 'square' ) );
     }
 
     if ( ! isset( $top_level['people_json'] ) ) {
@@ -819,7 +824,7 @@ function mancamp_normalise_yes_no( $value ) {
 
 function mancamp_collect_payment_meta( $form_data, $payment = [], $top_level = [] ) {
     $method = mancamp_normalise_pay_type(
-        $payment['payment_method'] ?? $payment['payment_mode'] ?? $payment['method'] ?? $top_level['payment_method'] ?? mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], 'square' )
+        $payment['payment_method'] ?? $payment['payment_mode'] ?? $payment['method'] ?? $top_level['payment_method'] ?? mancamp_pick_payment_method_field( $form_data, 'square' )
     );
     $status = strtolower( sanitize_text_field(
         $payment['payment_status'] ?? $payment['status'] ?? $payment['transaction_status'] ?? 'paid'
@@ -2245,7 +2250,7 @@ function mancamp_is_offline_submission( $submission, $payment = [] ) {
 
     $form_data = is_array( $submission['response'] ?? null ) ? $submission['response'] : [];
     $method = mancamp_normalise_pay_type(
-        $payment['payment_method'] ?? $payment['payment_mode'] ?? $payment['method'] ?? mancamp_pick_field( $form_data, [ 'mc_payment_method_out', 'payment_method', 'pay_type' ], 'square' )
+        $payment['payment_method'] ?? $payment['payment_mode'] ?? $payment['method'] ?? mancamp_pick_payment_method_field( $form_data, 'square' )
     );
 
     return $method === 'offline';

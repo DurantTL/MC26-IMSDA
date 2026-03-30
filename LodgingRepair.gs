@@ -166,6 +166,7 @@ function repairOrAuditLodgingInternal_(dryRun) {
   const headers = regSheet.getRange(1, 1, 1, numCols).getValues()[0];
   const allRows = regSheet.getRange(2, 1, lastRow - 1, numCols).getValues();
   const rawLookup = buildRawHistoricalLookup_(ss);
+  const reviewContext = buildVolunteerSuggestionContext_(headers, allRows);
 
   const logSheet = getOrCreateLodgingRepairLogSheet_(ss);
   const logRows  = [];
@@ -188,6 +189,7 @@ function repairOrAuditLodgingInternal_(dryRun) {
     const historical = getAuthoritativeHistoricalValues_(row, entryId, rawLookup);
     const attendeeInfo = computeAttendeeCounts_(row, structural.rosterPeople, historical);
     const registrationTotal = attendeeInfo.registrationTotalUsed;
+    const volunteerSuggestion = suggestLodgingForVolunteerRow_(reviewContext, i, attendeeInfo);
 
     const normalizedLodging = normalizeLodgingKeyForAudit_(currentLodging, {
       registrationTotal: registrationTotal,
@@ -249,7 +251,8 @@ function repairOrAuditLodgingInternal_(dryRun) {
       normalizedLodging,
       attendeeInfo,
       historical,
-      decision
+      decision,
+      volunteerSuggestion
     ));
   }
 
@@ -837,6 +840,9 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
     'email',
     'pluginDeclaredLodging',
     'currentStoredLodging',
+    'volunteerRow',
+    'suggestedLodgingFromContext',
+    'suggestionConfidence',
     'rawRegistrationTotal',
     'storedRegistrationTotal',
     'totalSourceUsed',
@@ -878,15 +884,19 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
 function buildLogRow_(
   entryId, registrantName, email,
   pluginDeclared, priceEval, currentStoredLodging,
-  attendeeInfo, historical, decision
+  attendeeInfo, historical, decision, volunteerSuggestion
 ) {
   const debug = decision.debug || {};
+  const suggestion = volunteerSuggestion || {};
   return [
     entryId,
     registrantName,
     email,
     pluginDeclared.lodging || '',
     currentStoredLodging || '',
+    suggestion.volunteerRow ? 'TRUE' : 'FALSE',
+    suggestion.suggestedLodgingFromContext || '',
+    suggestion.suggestionConfidence || '',
     attendeeInfo.rawRegistrationTotal,
     attendeeInfo.storedRegistrationTotal,
     attendeeInfo.totalSourceUsed,
@@ -1003,4 +1013,206 @@ function getAuthoritativeHistoricalValues_(registrationRow, entryId, rawLookup) 
     rawLodgingType: rawLodgingType,
     rawAttendeeLodgingKeys: rawAttendeeLodgingKeys
   };
+}
+
+function buildVolunteerSuggestionContext_(headers, allRows) {
+  const records = allRows.map(function(values, idx) {
+    const row = rowObjectFromHeaders_(headers, values);
+    const submittedAt = extractSubmissionEpochMs_(row);
+    const email = String(row['registrant_email'] || row['email'] || '').trim().toLowerCase();
+    const lastName = extractLastName_(row);
+    const lodging = normalizeLodgingKeyForAudit_(
+      row['lodging_preference'] || row['lodging_option_key'] || '',
+      {}
+    );
+    const groupTokens = extractGroupTokens_(row);
+    return {
+      idx: idx,
+      row: row,
+      submittedAt: submittedAt,
+      emailDomain: extractEmailDomain_(email),
+      lastName: lastName,
+      lodging: lodging,
+      groupTokens: groupTokens
+    };
+  });
+
+  const datasetLodgingMajority = chooseMajorityLodging_(
+    records.map(function(rec) { return rec.lodging; }).filter(Boolean)
+  );
+
+  return {
+    records: records,
+    datasetLodgingMajority: datasetLodgingMajority
+  };
+}
+
+function suggestLodgingForVolunteerRow_(context, rowIndex, attendeeInfo) {
+  const rawTotal = safeNumber_(attendeeInfo && attendeeInfo.rawRegistrationTotal);
+  const volunteerRow = rawTotal === 0;
+  if (!volunteerRow) {
+    return {
+      volunteerRow: false,
+      suggestedLodgingFromContext: '',
+      suggestionConfidence: ''
+    };
+  }
+
+  const records = (context && context.records) || [];
+  const target = records[rowIndex];
+  if (!target) {
+    return {
+      volunteerRow: true,
+      suggestedLodgingFromContext: '',
+      suggestionConfidence: 'low'
+    };
+  }
+
+  const groupPeers = records.filter(function(rec) {
+    if (rec.idx === target.idx || !rec.lodging) return false;
+    return haveSharedToken_(target.groupTokens, rec.groupTokens);
+  });
+  const groupMajority = chooseMajorityLodging_(
+    groupPeers.map(function(rec) { return rec.lodging; }).filter(Boolean)
+  );
+  if (groupMajority && groupMajority.count >= 1) {
+    return {
+      volunteerRow: true,
+      suggestedLodgingFromContext: groupMajority.key,
+      suggestionConfidence: groupMajority.count >= 2 ? 'high' : 'medium'
+    };
+  }
+
+  const nearbyWindowMs = 30 * 60 * 1000;
+  const nearby = records.filter(function(rec) {
+    if (rec.idx === target.idx || !rec.lodging) return false;
+    if (!target.submittedAt || !rec.submittedAt) return false;
+    return Math.abs(rec.submittedAt - target.submittedAt) <= nearbyWindowMs;
+  });
+
+  const sameLastName = records.filter(function(rec) {
+    if (rec.idx === target.idx || !rec.lodging) return false;
+    return !!target.lastName && rec.lastName === target.lastName;
+  });
+
+  const sameDomain = records.filter(function(rec) {
+    if (rec.idx === target.idx || !rec.lodging) return false;
+    return !!target.emailDomain && rec.emailDomain === target.emailDomain;
+  });
+
+  const combinedByIndex = {};
+  nearby.concat(sameLastName).concat(sameDomain).forEach(function(rec) {
+    combinedByIndex[rec.idx] = rec;
+  });
+  const combined = Object.keys(combinedByIndex).map(function(idx) {
+    return combinedByIndex[idx];
+  });
+  const combinedMajority = chooseMajorityLodging_(
+    combined.map(function(rec) { return rec.lodging; }).filter(Boolean)
+  );
+  if (combinedMajority && combinedMajority.count >= 2) {
+    return {
+      volunteerRow: true,
+      suggestedLodgingFromContext: combinedMajority.key,
+      suggestionConfidence: 'medium'
+    };
+  }
+
+  return {
+    volunteerRow: true,
+    suggestedLodgingFromContext: (context && context.datasetLodgingMajority && context.datasetLodgingMajority.key) || '',
+    suggestionConfidence: 'low'
+  };
+}
+
+function chooseMajorityLodging_(lodgings) {
+  const counts = {};
+  (lodgings || []).forEach(function(key) {
+    const normalized = normalizeLodgingKeyForAudit_(key, {});
+    if (!normalized) return;
+    counts[normalized] = (counts[normalized] || 0) + 1;
+  });
+
+  var bestKey = '';
+  var bestCount = 0;
+  var tie = false;
+  Object.keys(counts).forEach(function(key) {
+    const count = counts[key];
+    if (count > bestCount) {
+      bestKey = key;
+      bestCount = count;
+      tie = false;
+    } else if (count === bestCount) {
+      tie = true;
+    }
+  });
+
+  if (!bestKey || tie) return null;
+  return { key: bestKey, count: bestCount };
+}
+
+function extractSubmissionEpochMs_(row) {
+  const candidates = [
+    'submission_time',
+    'submitted_at',
+    'date_created',
+    'created_at',
+    'timestamp',
+    'entry_created_at'
+  ];
+  for (var i = 0; i < candidates.length; i++) {
+    const value = row[candidates[i]];
+    if (!value) continue;
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d.getTime();
+  }
+  return null;
+}
+
+function extractLastName_(row) {
+  const explicit = String(row['registrant_last_name'] || row['last_name'] || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  const full = String(row['registrant_name'] || row['full_name'] || '').trim().toLowerCase();
+  if (!full) return '';
+  const parts = full.split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+function extractEmailDomain_(email) {
+  const val = String(email || '').trim().toLowerCase();
+  const at = val.indexOf('@');
+  if (at < 0) return '';
+  return val.slice(at + 1);
+}
+
+function extractGroupTokens_(row) {
+  const fields = [
+    'registration_id',
+    'roommate_request',
+    'roommate_request_text',
+    'matched_registration_id',
+    'matched_registrant_name',
+    'special_name2',
+    'group_id',
+    'camping_group'
+  ];
+  const tokens = [];
+  fields.forEach(function(field) {
+    const raw = String(row[field] || '').trim().toLowerCase();
+    if (!raw) return;
+    raw.split(/[,\|;\/]+/).forEach(function(piece) {
+      const token = piece.trim();
+      if (!token) return;
+      if (token.length < 3) return;
+      tokens.push(token);
+    });
+  });
+  return tokens;
+}
+
+function haveSharedToken_(left, right) {
+  if (!left || !right || !left.length || !right.length) return false;
+  const set = {};
+  left.forEach(function(token) { set[token] = true; });
+  return right.some(function(token) { return !!set[token]; });
 }

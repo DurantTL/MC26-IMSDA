@@ -54,6 +54,23 @@ function lodgingLabelFromKey_(key) {
   return opt ? (opt.label || key) : key;
 }
 
+/**
+ * Authoritative historical repair mapping (per-person price => lodging key).
+ */
+function expectedLodgingFromPrice_(perPersonPrice) {
+  const price = safeNumber_(perPersonPrice);
+  if (price === null) return '';
+  const rounded = Math.round(price * 100) / 100;
+  const map = {
+    120: 'shared_cabin_connected',
+    100: 'shared_cabin_detached',
+    90: 'rv_hookups',
+    80: 'tent_no_hookups',
+    70: 'sabbath_attendance_only'
+  };
+  return map[rounded] || '';
+}
+
 
 // ============================================================
 // SECTION 2 — PUBLIC ENTRY POINTS
@@ -423,9 +440,9 @@ function computeAttendeeCounts_(row, rosterPeople) {
  */
 function evaluatePricePlausibility_(registrationTotal, attendeeInfo) {
   const total = safeNumber_(registrationTotal);
-  const billedCount = Math.max(safeNumber_(attendeeInfo.billedCount) || 1, 1);
+  const attendeeCount = Math.max(safeNumber_(attendeeInfo.attendeeCountFromRow) || 0, 0);
 
-  if (total === null || total <= 0) {
+  if (total === null || total <= 0 || attendeeCount < 1) {
     return {
       hasSignal: false,
       plausibility: 'unknown',
@@ -433,13 +450,16 @@ function evaluatePricePlausibility_(registrationTotal, attendeeInfo) {
       candidateKeys: [],
       priceGuess: '',
       unambiguousGuess: '',
-      explain: total === 0 ? 'zero total' : 'missing/non-positive total'
+      explain: attendeeCount < 1
+        ? 'missing/non-positive attendee count'
+        : (total === 0 ? 'zero total' : 'missing/non-positive total')
     };
   }
 
-  const perPerson = total / billedCount;
-  const candidateKeys = lodgingKeysFromPerPersonPrice_(perPerson);
-  const plausibility = candidateKeys.length === 1 ? 'affirmative' : (candidateKeys.length > 1 ? 'ambiguous' : 'inconsistent');
+  const perPerson = total / attendeeCount;
+  const expectedLodging = expectedLodgingFromPrice_(perPerson);
+  const candidateKeys = expectedLodging ? [expectedLodging] : [];
+  const plausibility = expectedLodging ? 'affirmative' : 'inconsistent';
 
   return {
     hasSignal: true,
@@ -447,10 +467,10 @@ function evaluatePricePlausibility_(registrationTotal, attendeeInfo) {
     perPersonAmount: perPerson,
     candidateKeys: candidateKeys,
     priceGuess: candidateKeys.join('|'),
-    unambiguousGuess: candidateKeys.length === 1 ? candidateKeys[0] : '',
+    unambiguousGuess: expectedLodging,
     explain: plausibility === 'affirmative'
-      ? 'single configured lodging match'
-      : (plausibility === 'ambiguous' ? 'multiple configured lodging matches' : 'no configured lodging match')
+      ? 'single authoritative historical lodging match'
+      : 'no authoritative historical lodging match'
   };
 }
 
@@ -501,21 +521,31 @@ function buildComplexityFlags_(ctx) {
 }
 
 function computeDecisionFlags_(ctx) {
+  const complexityFlags = buildComplexityFlags_(ctx);
+  const attendeeCount = safeNumber_(ctx.attendeeInfo.attendeeCountFromRow) || 0;
+  const hasValidEntryId = String(ctx.entryId || '').trim() !== '';
+  const simpleRowEligible = !ctx.isTest &&
+    !ctx.isDuplicate &&
+    hasValidEntryId &&
+    attendeeCount >= 1 &&
+    complexityFlags.length === 0;
+
   return {
     structuralValidityResult: !!ctx.structural.structurallyValid,
     pricePlausibilityResult: ctx.priceEval.plausibility || 'unknown',
-    complexityFlags: buildComplexityFlags_(ctx),
-    isSimpleRow: !ctx.isTest && !ctx.isDuplicate && buildComplexityFlags_(ctx).length === 0
+    complexityFlags: complexityFlags,
+    hasValidEntryId: hasValidEntryId,
+    attendeeCount: attendeeCount,
+    simpleRowEligible: simpleRowEligible,
+    isSimpleRow: simpleRowEligible
   };
 }
 
 function classifyLodgingRepairDecision_(ctx) {
   const flags = computeDecisionFlags_(ctx);
   const pluginLodging = ctx.pluginDeclared.lodging || '';
-  const pluginExists = !!pluginLodging;
-  const pluginConsistent = !!ctx.pluginDeclared.consistent;
   const priceLodging = ctx.priceEval.unambiguousGuess || '';
-  const priceHasSignal = ctx.priceEval.hasSignal && !!priceLodging;
+  const priceHasSignal = !!priceLodging;
   const currentStored = ctx.normalizedLodging || '';
 
   const reasonParts = [];
@@ -532,59 +562,81 @@ function classifyLodgingRepairDecision_(ctx) {
     return buildDecisionResult_('DUPLICATE', '', 'DUPLICATE_OVERRIDE', reasonParts, ['explicit duplicate entry override'], false, 'blocked_special_case', flags, pluginLodging, priceLodging, currentStored);
   }
 
-  if (!pluginConsistent && ctx.pluginDeclared.source === 'people[].lodging_option_key') {
-    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'PLUGIN_ATTENDEE_INCONSISTENT', reasonParts, ['attendee lodging_option_key values conflict'], false, 'inconsistent_attendee_plugin_keys', flags, pluginLodging, priceLodging, currentStored);
+  if (ctx.entryId === '3490') {
+    return buildDecisionResult_(
+      'NEEDS_MANUAL_REVIEW',
+      '',
+      'EXEMPT_3490_MANUAL_REVIEW',
+      reasonParts,
+      ['documented exemption 3490'],
+      false,
+      'documented_exemption',
+      flags,
+      pluginLodging,
+      priceLodging,
+      currentStored
+    );
   }
 
-  if (flags.isSimpleRow) {
-    if (pluginExists && priceHasSignal && pluginLodging === priceLodging) {
-      if (currentStored !== pluginLodging) {
-        return buildDecisionResult_('AUTO_FIXABLE', pluginLodging, 'SIMPLE_FIX_PLUGIN_AND_PRICE_AGREE', reasonParts, ['plugin + price agree; stored lodging differs'], true, '', flags, pluginLodging, priceLodging, currentStored);
-      }
-      return buildDecisionResult_('OK', '', 'SIMPLE_OK_PLUGIN_AND_PRICE_AGREE', reasonParts, ['plugin + price agree; stored lodging already aligned'], false, '', flags, pluginLodging, priceLodging, currentStored);
+  if (flags.simpleRowEligible) {
+    if (!priceHasSignal) {
+      return buildDecisionResult_(
+        'NEEDS_MANUAL_REVIEW',
+        '',
+        'SIMPLE_NO_PRICE_MATCH',
+        reasonParts,
+        ['simple row requires authoritative price match'],
+        false,
+        'no_authoritative_price_mapping',
+        flags,
+        pluginLodging,
+        priceLodging,
+        currentStored
+      );
     }
-
-    if (pluginExists && priceHasSignal && pluginLodging !== priceLodging) {
-      return buildDecisionResult_('PRICE_INCONSISTENT', '', 'SIMPLE_PLUGIN_PRICE_CONFLICT', reasonParts, ['plugin-declared lodging conflicts with price-derived lodging'], false, 'plugin_vs_price_conflict', flags, pluginLodging, priceLodging, currentStored);
+    if (currentStored !== priceLodging) {
+      return buildDecisionResult_(
+        'AUTO_FIXABLE',
+        priceLodging,
+        'SIMPLE_FIX_FROM_PRICE',
+        reasonParts,
+        ['historical repair uses authoritative price mapping'],
+        true,
+        '',
+        flags,
+        pluginLodging,
+        priceLodging,
+        currentStored
+      );
     }
-
-    if (pluginExists && !priceHasSignal) {
-      if (currentStored !== pluginLodging) {
-        return buildDecisionResult_('AUTO_FIXABLE', pluginLodging, 'SIMPLE_FIX_PLUGIN_ONLY', reasonParts, ['plugin-declared lodging present; price signal unavailable'], true, '', flags, pluginLodging, priceLodging, currentStored);
-      }
-      return buildDecisionResult_('OK', '', 'SIMPLE_OK_PLUGIN_ONLY', reasonParts, ['plugin-declared lodging present; price signal unavailable'], false, '', flags, pluginLodging, priceLodging, currentStored);
-    }
-
-    if (!pluginExists && priceHasSignal) {
-      if (currentStored !== priceLodging) {
-        return buildDecisionResult_('AUTO_FIXABLE', priceLodging, 'SIMPLE_FIX_PRICE_FALLBACK', reasonParts, ['plugin lodging missing; using price fallback'], true, '', flags, pluginLodging, priceLodging, currentStored);
-      }
-      return buildDecisionResult_('OK', '', 'SIMPLE_OK_PRICE_FALLBACK', reasonParts, ['plugin lodging missing; price fallback matches stored'], false, '', flags, pluginLodging, priceLodging, currentStored);
-    }
-
-    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'SIMPLE_LOW_CONFIDENCE', reasonParts, ['insufficient reliable lodging signal'], false, 'no_plugin_and_no_unambiguous_price', flags, pluginLodging, priceLodging, currentStored);
+    return buildDecisionResult_(
+      'OK',
+      '',
+      'SIMPLE_ALREADY_MATCHED_PRICE',
+      reasonParts,
+      ['stored lodging already matches authoritative price mapping'],
+      false,
+      '',
+      flags,
+      pluginLodging,
+      priceLodging,
+      currentStored
+    );
   }
 
-  if (ctx.entryId === '3490' && pluginExists) {
-    if (currentStored !== pluginLodging) {
-      return buildDecisionResult_('AUTO_FIXABLE', pluginLodging, 'EXEMPT_3490_PLUGIN_PRIMARY', reasonParts, ['documented exemption 3490; plugin lodging treated as authoritative'], true, '', flags, pluginLodging, priceLodging, currentStored);
-    }
-    return buildDecisionResult_('OK', '', 'EXEMPT_3490_ALREADY_ALIGNED', reasonParts, ['documented exemption 3490; stored already aligned'], false, '', flags, pluginLodging, priceLodging, currentStored);
-  }
-
-  if (pluginExists && priceHasSignal && pluginLodging !== priceLodging) {
-    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'COMPLEX_PLUGIN_PRICE_CONFLICT', reasonParts, ['complex row: plugin vs price conflict requires review'], false, 'complex_conflict', flags, pluginLodging, priceLodging, currentStored);
-  }
-
-  if (pluginExists && currentStored !== pluginLodging) {
-    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'COMPLEX_STORED_DIFFERS_FROM_PLUGIN', reasonParts, ['complex row: stored lodging differs from plugin declaration'], false, 'complex_row_non_autofix', flags, pluginLodging, priceLodging, currentStored);
-  }
-
-  if (!pluginExists && priceHasSignal && currentStored !== priceLodging) {
-    return buildDecisionResult_('NEEDS_MANUAL_REVIEW', '', 'COMPLEX_PRICE_ONLY_DIFFERENCE', reasonParts, ['complex row: cannot auto-fix from price alone'], false, 'complex_price_only_blocked', flags, pluginLodging, priceLodging, currentStored);
-  }
-
-  return buildDecisionResult_('OK', '', 'COMPLEX_NO_CONFLICT', reasonParts, ['no lodging conflict detected for complex row'], false, '', flags, pluginLodging, priceLodging, currentStored);
+  return buildDecisionResult_(
+    'NEEDS_MANUAL_REVIEW',
+    '',
+    'COMPLEX_MANUAL_REVIEW',
+    reasonParts,
+    ['complex row is not auto-fixable from price alone'],
+    false,
+    'complex_row',
+    flags,
+    pluginLodging,
+    priceLodging,
+    currentStored
+  );
 }
 
 function buildDecisionResult_(status, correctedLodging, decisionBranch, reasonParts, extras, eligible, blockedBy, flags, pluginLodging, priceLodging, currentStored) {
@@ -602,7 +654,9 @@ function buildDecisionResult_(status, correctedLodging, decisionBranch, reasonPa
       structuralValidityResult: flags.structuralValidityResult,
       pricePlausibilityResult: flags.pricePlausibilityResult,
       complexityFlags: flags.complexityFlags,
-      isSimpleRow: flags.isSimpleRow
+      isSimpleRow: flags.isSimpleRow,
+      simpleRowEligible: flags.simpleRowEligible,
+      attendeeCount: flags.attendeeCount
     }
   };
 }
@@ -749,25 +803,22 @@ function getOrCreateLodgingRepairLogSheet_(ss) {
     'registrant_name',
     'email',
     'pluginDeclaredLodging',
-    'pluginDeclaredSource',
-    'pluginDeclaredConsistent',
-    'priceDerivedLodging',
     'currentStoredLodging',
-    'authoritativeLodgingDecision',
-    'conflictType',
+    'registrationTotal',
+    'attendeeCount',
+    'perPersonPrice',
+    'expectedLodgingFromPrice',
+    'simpleRowEligible',
     'repairEligible',
-    'repairBlockedBy',
-    'registration_total',
-    'attendee_count',
-    'per_person_amount',
-    'decision_branch',
-    'structural_validity_result',
-    'price_plausibility_result',
-    'complexity_flags',
-    'is_simple_row',
-    'final_status',
-    'reason_details',
-    'write_occurred'
+    'finalStatus',
+    'repairReason',
+    'writeOccurred',
+    'decisionBranch',
+    'pricePlausibilityResult',
+    'complexityFlags',
+    'conflictType',
+    'authoritativeLodgingDecision',
+    'repairBlockedBy'
   ];
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setValues([headers]);
@@ -794,25 +845,22 @@ function buildLogRow_(
     registrantName,
     email,
     pluginDeclared.lodging || '',
-    pluginDeclared.source || '',
-    pluginDeclared.consistent ? 'TRUE' : 'FALSE',
-    priceEval.unambiguousGuess || '',
     currentStoredLodging || '',
-    decision.authoritativeLodgingDecision || '',
-    decision.conflictType || '',
-    decision.repairEligible ? 'TRUE' : 'FALSE',
-    decision.repairBlockedBy || '',
     registrationTotal,
     attendeeCount,
     priceEval.perPersonAmount,
-    decision.decisionBranch || '',
-    debug.structuralValidityResult ? 'TRUE' : 'FALSE',
-    String(debug.pricePlausibilityResult || ''),
-    (debug.complexityFlags || []).join('|'),
-    debug.isSimpleRow ? 'TRUE' : 'FALSE',
+    priceEval.unambiguousGuess || '',
+    debug.simpleRowEligible ? 'TRUE' : 'FALSE',
+    decision.repairEligible ? 'TRUE' : 'FALSE',
     decision.status,
     decision.reasonDetails,
-    decision.writeOccurred ? 'YES' : 'NO'
+    decision.writeOccurred ? 'YES' : 'NO',
+    decision.decisionBranch || '',
+    String(debug.pricePlausibilityResult || ''),
+    (debug.complexityFlags || []).join('|'),
+    decision.conflictType || '',
+    decision.authoritativeLodgingDecision || '',
+    decision.repairBlockedBy || ''
   ];
 }
 
@@ -824,7 +872,7 @@ function writeRepairLogRows_(sheet, logRows) {
 
   const startRow  = 2;
   const numCols   = logRows[0].length;
-  const statusIdx = 20; // 0-based index of final_status
+  const statusIdx = 11; // 0-based index of finalStatus
 
   sheet.getRange(startRow, 1, logRows.length, numCols).setValues(logRows);
 
@@ -838,7 +886,6 @@ function writeRepairLogRows_(sheet, logRows) {
     } else if (status === 'AUTO_FIXABLE') {
       bg = '#fff3cd';
     } else if (
-      status === 'PRICE_INCONSISTENT' ||
       status === 'NEEDS_MANUAL_REVIEW' ||
       status === 'TEST' ||
       status === 'DUPLICATE'

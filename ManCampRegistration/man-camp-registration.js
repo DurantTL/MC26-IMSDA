@@ -1290,6 +1290,7 @@
         window.console.warn('[ManCamp][DEBUG] duplicate submit blocked while submission in flight');
         return;
       }
+      window.clearTimeout(_paymentAmountNotifyTimer);
 
       state.rosterError = '';
       const primaryValid = validatePrimary();

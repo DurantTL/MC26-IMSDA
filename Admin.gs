@@ -1400,8 +1400,8 @@ function backfillRoommateRequests() {
     const entryIdColNum = getColumnNumber_(rmSheet, 'entry_id');
     if (entryIdColNum > 0) {
       rmSheet.getRange(2, entryIdColNum, rmSheet.getLastRow() - 1, 1)
-        .getValues().flat()
-        .forEach(function(v) { if (v) existingEntryIds.add(String(v).trim()); });
+        .getValues().flat().map(String)
+        .forEach(function(v) { if (v) existingEntryIds.add(v.trim()); });
     }
   }
 
@@ -1432,7 +1432,7 @@ function backfillRoommateRequests() {
       const entryIdColNum = getColumnNumber_(regSheet, 'fluent_form_entry_id');
       const nameColNum    = getColumnNumber_(regSheet, 'registrant_name');
       if (entryIdColNum > 0 && nameColNum > 0 && regSheet.getLastRow() > 1) {
-        const entryIds   = regSheet.getRange(2, entryIdColNum, regSheet.getLastRow() - 1, 1).getValues().flat();
+        const entryIds   = regSheet.getRange(2, entryIdColNum, regSheet.getLastRow() - 1, 1).getValues().flat().map(String);
         const matchIndex = entryIds.indexOf(matchedId);
         if (matchIndex >= 0) {
           matchedName = String(regSheet.getRange(matchIndex + 2, nameColNum).getValue() || '');
@@ -1504,13 +1504,15 @@ function manuallyLinkRoommates(entryIdA, entryIdB) {
     const rmMatchedIdCol = getColumnNumber_(regSheet, 'roommate_matched_id');
     const rmStatusColNum = getColumnNumber_(regSheet, 'roommate_match_status');
 
+    Logger.log('manuallyLinkRoommates: fluent_form_entry_id column number = ' + entryIdColNum);
+
     if (entryIdColNum < 0 || regIdColNum < 0) {
       return { success: false, error: 'Required columns not found in Registrations sheet.' };
     }
 
     const lastRow  = regSheet.getLastRow();
     const entryIds = lastRow > 1
-      ? regSheet.getRange(2, entryIdColNum, lastRow - 1, 1).getValues().flat()
+      ? regSheet.getRange(2, entryIdColNum, lastRow - 1, 1).getValues().flat().map(String)
       : [];
 
     const idxA = entryIds.indexOf(entryIdA_);
@@ -1592,7 +1594,7 @@ function upsertRoommateAssignmentsRow_(rmSheet, rowObj) {
   if (entryId && rmSheet.getLastRow() > 1) {
     const entryIdColNum = getColumnNumber_(rmSheet, 'entry_id');
     if (entryIdColNum > 0) {
-      const existing  = rmSheet.getRange(2, entryIdColNum, rmSheet.getLastRow() - 1, 1).getValues().flat();
+      const existing  = rmSheet.getRange(2, entryIdColNum, rmSheet.getLastRow() - 1, 1).getValues().flat().map(String);
       const rowIndex  = existing.indexOf(entryId);
       if (rowIndex >= 0) {
         const existingRow = readRowAsObject_(rmSheet, rowIndex + 2);

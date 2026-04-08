@@ -353,6 +353,31 @@ function generateCampingCoordinatorSheet() {
   return generateLodgingInventoryReportSheet();
 }
 
+function generateShirtListSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rosterSheet = ss.getSheetByName(CONFIG.sheets.roster);
+  const rows = [[
+    'name',
+    'shirt_size'
+  ]];
+
+  if (rosterSheet && rosterSheet.getLastRow() > 1) {
+    const data = rosterSheet.getDataRange().getValues();
+    const colMap = getStrippedColumnMap_(rosterSheet);
+
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const name = String(row[colMap['attendeename']] || '').trim();
+      const shirtSize = String(row[colMap['shirtsize']] || '').trim().toUpperCase();
+      if (!name && !shirtSize) continue;
+      rows.push([name, shirtSize]);
+    }
+  }
+
+  writeReportSheet_('Shirt List', rows);
+  return rows.length - 1;
+}
+
 function generateAllReportSheets() {
   const results = {
     registrationDashboard: 0,

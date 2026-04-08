@@ -226,6 +226,7 @@
         <div class="card-body">
           <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminGenerateClubDashboards')">Generate Registration Dashboards</button>
           <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminGenerateCampingCoordinatorSummary')">Generate Lodging Summary</button>
+          <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminGenerateShirtListSheet')">Generate Shirt List Sheet</button>
           <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminValidateDataIntegrity')">Validate Data Integrity</button>
           <button class="btn btn-secondary btn-full" onclick="runSystemTool('adminFindDuplicates')">Find Duplicates</button>
           <button class="btn btn-primary btn-full" onclick="openQueuePanel()">Open Lodging Queue</button>
@@ -686,10 +687,12 @@
             optionList(['bottom','top_guardian_child','rv','tent','day_only','none'], person.bunkType) +
           '</select></div>' +
           '<div><label class="label">Assigned Area</label><input id="edit-area-' + index + '" class="input" type="text" value="' + esc(person.assignedLodgingArea || '') + '"></div></div>' +
-          '<div class="form-row two"><div><label class="label">Guardian Link Key</label><input id="edit-link-' + index + '" class="input" type="text" value="' + esc(person.guardianLinkKey || '') + '"></div>' +
-          '<div><label class="label">Guardian Registration ID</label><input id="edit-guardian-reg-' + index + '" class="input" type="text" value="' + esc(person.guardianRegistrationId || '') + '"></div></div>' +
-          '<div class="form-row two"><div><label class="label">Notes</label><input id="edit-notes-' + index + '" class="input" type="text" value="' + esc(person.notes || '') + '"></div>' +
-          '<div style="display:flex;align-items:flex-end;padding-bottom:4px"><label class="tiny"><input id="edit-guardian-' + index + '" type="checkbox"' + (person.isGuardian ? ' checked' : '') + '> Guardian</label></div></div>' +
+          '<div class="form-row two"><div><label class="label">Shirt Size</label><input id="edit-shirt-' + index + '" class="input" type="text" value="' + esc(person.shirtSize || '') + '"></div>' +
+          '<div><label class="label">Guardian Link Key</label><input id="edit-link-' + index + '" class="input" type="text" value="' + esc(person.guardianLinkKey || '') + '"></div></div>' +
+          '<div class="form-row two"><div><label class="label">Guardian Registration ID</label><input id="edit-guardian-reg-' + index + '" class="input" type="text" value="' + esc(person.guardianRegistrationId || '') + '"></div>' +
+          '<div><label class="label">Notes</label><input id="edit-notes-' + index + '" class="input" type="text" value="' + esc(person.notes || '') + '"></div></div>' +
+          '<div style="display:flex;align-items:flex-end;padding-bottom:4px"><label class="tiny"><input id="edit-guardian-' + index + '" type="checkbox"' + (person.isGuardian ? ' checked' : '') + '> Guardian</label></div>' +
+          '<div></div></div>' +
           '<input id="edit-attendee-' + index + '" type="hidden" value="' + esc(person.attendeeId) + '">' +
           '</div>';
       });
@@ -802,6 +805,7 @@
           lodgingStatus: document.getElementById('edit-status-' + index).value,
           bunkType: document.getElementById('edit-bunk-' + index).value,
           assignedLodgingArea: document.getElementById('edit-area-' + index).value.trim(),
+          shirtSize: document.getElementById('edit-shirt-' + index).value.trim(),
           guardianLinkKey: document.getElementById('edit-link-' + index).value.trim(),
           guardianRegistrationId: document.getElementById('edit-guardian-reg-' + index).value.trim(),
           notes: document.getElementById('edit-notes-' + index).value.trim(),
@@ -1198,6 +1202,7 @@
         person.attendeeId,
         person.ageGroup,
         person.lodgingPreference,
+        person.shirtSize,
         person.lodgingStatus,
         person.bunkType,
         person.assignedLodgingArea,

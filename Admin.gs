@@ -354,6 +354,9 @@ function adminPanelUpdateLodgingDetails(registrationId, payload) {
         bunkType: override.bunkType !== undefined
           ? normalizeAdminChoice_(override.bunkType, CONFIG.lodging.validation.validBunkTypes, person.bunkType || 'none')
           : person.bunkType,
+        shirtSize: override.shirtSize !== undefined
+          ? normalizeShirtSize_(override.shirtSize)
+          : person.shirtSize,
         assignedLodgingArea: override.assignedLodgingArea !== undefined ? String(override.assignedLodgingArea || '').trim() : person.assignedLodgingArea,
         notes: override.notes !== undefined ? String(override.notes || '').trim() : person.notes,
         consumesPublicInventory: override.consumesPublicInventory !== undefined
@@ -472,6 +475,7 @@ function buildAdminRosterPerson_(person) {
     guardianRegistrationId: person.guardianRegistrationId || '',
     guardianSummary: guardianSummary,
     lodgingPreference: person.lodgingPreference || '',
+    shirtSize: person.shirtSize || '',
     lodgingStatus: person.lodgingStatus || 'pending',
     bunkType: person.bunkType || 'none',
     assignedLodgingArea: person.assignedLodgingArea || '',
@@ -1164,6 +1168,15 @@ function adminGenerateCampingCoordinatorSummary() {
   try {
     const count = generateCampingCoordinatorSheet();
     return { success: true, message: 'Generated lodging inventory summary with ' + count + ' lodging categories.' };
+  } catch (e) {
+    return { success: false, message: 'Error: ' + e.message };
+  }
+}
+
+function adminGenerateShirtListSheet() {
+  try {
+    const count = generateShirtListSheet();
+    return { success: true, message: 'Generated shirt list sheet with ' + count + ' rows.' };
   } catch (e) {
     return { success: false, message: 'Error: ' + e.message };
   }

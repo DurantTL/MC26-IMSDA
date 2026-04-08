@@ -1001,6 +1001,7 @@ function onOpen() {
       SpreadsheetApp.getUi().createMenu('📊 Generate Reports')
         .addItem('🧾 Registration Dashboard',      'generateClubDashboardSheet')
         .addItem('🏕️ Lodging Inventory Summary',   'generateCampingCoordinatorSheet')
+        .addItem('👕 Shirt List',                  'generateShirtListSheet')
         .addItem('📊 Generate ALL Reports',         'generateAllReportSheets')
     )
     .addSeparator()
